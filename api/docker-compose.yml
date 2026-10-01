@@ -1,0 +1,37 @@
+version: "3.8"
+
+services:
+  whisper-api:
+    build:
+      # Build context is the project root so Dockerfile can COPY core/ and model_cache/
+      context: ..
+      dockerfile: api/Dockerfile
+
+    image: whisper-api:local
+
+    ports:
+      - "8000:8000"
+
+    # GPU access — requires nvidia-container-toolkit on the host.
+    # Install: https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+    environment:
+      - CUDA_VISIBLE_DEVICES=0   # which GPU to use (0 = first GPU)
+      - DEVICE=cuda
+      - COMPUTE_TYPE=int8
+
+    # Restart on crash but not on explicit `docker-compose down`
+    restart: unless-stopped
+
+    # Optional: mount model_cache as a volume instead of baking into the image.
+    # Useful if the model files are large and you want faster rebuilds.
+    # Uncomment and adjust path if needed:
+    # volumes:
+    #   - ../model_cache:/app/model_cache:ro

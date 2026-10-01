@@ -1,0 +1,30 @@
+# Git / version control
+.git
+.gitignore
+
+# Python cache
+**/__pycache__
+**/*.pyc
+**/*.pyo
+**/*.pyd
+.pytest_cache
+
+# Local outputs
+output.json
+session_stt.*
+*.txt
+*.json
+
+# Cog (not needed in API image)
+cog/
+
+# GCP scripts (not needed in image)
+gcp_cloud_run/
+gcp_vm/
+
+# Local runner (not needed in image)
+local/
+
+# Dev files
+.env
+*.log
