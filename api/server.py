@@ -11,10 +11,11 @@ from __future__ import annotations
 
 import asyncio
 import sys
+import threading
 import traceback
 import uuid
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -23,6 +24,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from core.pipeline import WhisperDiarizationPipeline
+from api.knowledge_graph_routes import router as kg_router
+
 
 # ── App ──────────────────────────────────────────────────────────────────────
 app = FastAPI(
@@ -51,6 +54,14 @@ async def _startup() -> None:
 # Structure: { job_id: {"status": str, "result": dict|None, "error": str|None} }
 # For multi-instance deployments, replace with Redis.
 _jobs: Dict[str, dict] = {}
+
+# ── Batch store ───────────────────────────────────────────────────────────────
+# Structure: { batch_id: {"job_ids": [...], "learner_id": str, "tutor_id": str} }
+_batches: Dict[str, dict] = {}
+
+# ── Concurrency limiter ───────────────────────────────────────────────────────
+# At most 2 sessions process simultaneously (GPU / LLM cost control).
+_session_semaphore = threading.Semaphore(2)
 
 
 # ── Pydantic models ───────────────────────────────────────────────────────────
@@ -95,7 +106,37 @@ class TranscribeRequest(BaseModel):
     )
     stationary: bool = Field(True, description="Assume stationary noise profile")
     target_dBFS: float = Field(-18.0, description="Target RMS normalization level (dBFS)")
+    learner_id: Optional[str] = Field(None, description="Optional Learner ID for Knowledge Graph ingestion")
+    tutor_id: Optional[str] = Field(None, description="Optional Tutor ID for Knowledge Graph ingestion")
 
+
+class BatchTranscribeRequest(BaseModel):
+    """Submit multiple audio URLs for one learner in one go."""
+    file_urls: List[str] = Field(
+        ...,
+        description="List of direct audio/video URLs to process.",
+        min_length=1,
+        max_length=20,
+    )
+    learner_id: str = Field(..., description="Learner ID — required for batch KG ingestion")
+    tutor_id: str = Field(..., description="Tutor ID — required for batch KG ingestion")
+    language: Optional[str] = Field(None)
+    translate: bool = Field(False)
+    preprocess: int = Field(0, ge=0, le=4)
+    num_speakers: Optional[int] = Field(None, ge=1, le=50)
+    prompt: Optional[str] = Field(None)
+
+
+class BatchStatus(BaseModel):
+    batch_id: str
+    learner_id: str
+    tutor_id: str
+    total: int
+    queued: int
+    processing: int
+    done: int
+    error: int
+    job_ids: List[str]
 
 class JobStatus(BaseModel):
     job_id: str
@@ -161,35 +202,145 @@ async def health() -> dict:
     return {"status": "ok"}
 
 
+@app.post(
+    "/transcribe/batch",
+    response_model=BatchStatus,
+    status_code=202,
+    summary="Submit multiple audio URLs for one learner",
+)
+async def transcribe_batch(req: BatchTranscribeRequest) -> BatchStatus:
+    """
+    Submit multiple session URLs for a single learner in one go.
+    They are queued and processed with max 2 concurrent sessions.
+    Poll /batches/{batch_id} for overall status, or /jobs/{job_id} per session.
+    """
+    batch_id = str(uuid.uuid4())
+    job_ids = []
+
+    for url in req.file_urls:
+        job_id = str(uuid.uuid4())
+        _jobs[job_id] = {"status": "queued", "result": None, "error": None}
+        job_ids.append(job_id)
+
+        # Build a single-session request for each URL
+        single_req = TranscribeRequest(
+            file_url=url,
+            num_speakers=req.num_speakers,
+            language=req.language,
+            translate=req.translate,
+            preprocess=req.preprocess,
+            prompt=req.prompt,
+            learner_id=req.learner_id,
+            tutor_id=req.tutor_id,
+        )
+        loop = asyncio.get_event_loop()
+        loop.run_in_executor(None, _run_job, job_id, single_req)
+
+    _batches[batch_id] = {
+        "job_ids": job_ids,
+        "learner_id": req.learner_id,
+        "tutor_id": req.tutor_id,
+    }
+
+    return _build_batch_status(batch_id)
+
+
+@app.get(
+    "/batches/{batch_id}",
+    response_model=BatchStatus,
+    summary="Poll overall batch progress",
+)
+async def get_batch(batch_id: str) -> BatchStatus:
+    """Returns aggregated status across all jobs in the batch."""
+    if batch_id not in _batches:
+        raise HTTPException(status_code=404, detail=f"Batch '{batch_id}' not found")
+    return _build_batch_status(batch_id)
+
+
+def _build_batch_status(batch_id: str) -> BatchStatus:
+    b = _batches[batch_id]
+    counts = {"queued": 0, "processing": 0, "done": 0, "error": 0}
+    for jid in b["job_ids"]:
+        st = _jobs.get(jid, {}).get("status", "queued")
+        counts[st] = counts.get(st, 0) + 1
+    return BatchStatus(
+        batch_id=batch_id,
+        learner_id=b["learner_id"],
+        tutor_id=b["tutor_id"],
+        total=len(b["job_ids"]),
+        job_ids=b["job_ids"],
+        **counts,
+    )
+
+
+app.include_router(kg_router)
+
+
 # ── Static Files (Serve Frontend UI) ──────────────────────────────────────────
 _static_dir = Path(__file__).resolve().parent / "static"
 if _static_dir.exists():
     app.mount("/", StaticFiles(directory=str(_static_dir), html=True), name="static")
 
 
-# ── Background worker ─────────────────────────────────────────────────────────
+# ── Background worker ────────────────────────────────────────────────────────
 def _run_job(job_id: str, req: TranscribeRequest) -> None:
-    """Blocking function; runs in a thread-pool executor."""
-    _jobs[job_id]["status"] = "processing"
+    """Blocking function; runs in a thread-pool executor.
+    Acquires a semaphore slot before processing, so at most 2 jobs
+    run simultaneously regardless of how many are queued.
+    """
+    # Block here (in the thread) until a concurrency slot is free.
+    # Status stays "queued" while waiting.
+    _session_semaphore.acquire()
     try:
-        result = _pipeline.predict(
-            file_url=req.file_url,
-            file_string=req.file_string,
-            num_speakers=req.num_speakers,
-            translate=req.translate,
-            language=req.language,
-            prompt=req.prompt,
-            preprocess=req.preprocess,
-            highpass_freq=req.highpass_freq,
-            lowpass_freq=req.lowpass_freq,
-            prop_decrease=req.prop_decrease,
-            stationary=req.stationary,
-            target_dBFS=req.target_dBFS,
-        )
-        _jobs[job_id]["status"] = "done"
-        _jobs[job_id]["result"] = result.to_dict()
-    except Exception as exc:  # noqa: BLE001
-        tb = traceback.format_exc()
-        print(f"ERROR job {job_id}:\n{tb}", file=sys.stderr, flush=True)
-        _jobs[job_id]["status"] = "error"
-        _jobs[job_id]["error"] = tb  # full traceback, not just str(exc)
+        _jobs[job_id]["status"] = "processing"
+        try:
+            result = _pipeline.predict(
+                file_url=req.file_url,
+                file_string=req.file_string,
+                num_speakers=req.num_speakers,
+                translate=req.translate,
+                language=req.language,
+                prompt=req.prompt,
+                preprocess=req.preprocess,
+                highpass_freq=req.highpass_freq,
+                lowpass_freq=req.lowpass_freq,
+                prop_decrease=req.prop_decrease,
+                stationary=req.stationary,
+                target_dBFS=req.target_dBFS,
+            )
+            _jobs[job_id]["status"] = "done"
+            _jobs[job_id]["result"] = result.to_dict()
+
+            # Knowledge Graph Ingestion Integration
+            if req.learner_id and req.tutor_id:
+                try:
+                    import json
+                    import tempfile
+                    from datetime import date
+
+                    from knowledge_graph.ingest.orchestrator import ingest_session
+
+                    with tempfile.NamedTemporaryFile("w", delete=False, suffix=".json") as f:
+                        json.dump(result.to_dict(), f)
+                        temp_path = f.name
+
+                    ingest_session(
+                        transcript_path=temp_path,
+                        learner_id=req.learner_id,
+                        tutor_id=req.tutor_id,
+                        session_date=date.today().isoformat(),
+                    )
+                    print(f"INFO: Successfully ingested job {job_id} to KG for learner {req.learner_id}")
+                except Exception:
+                    tb_kg = traceback.format_exc()
+                    print(f"ERROR: KG ingestion failed for job {job_id}:\n{tb_kg}", file=sys.stderr, flush=True)
+
+        except Exception:  # noqa: BLE001
+            tb = traceback.format_exc()
+            print(f"ERROR job {job_id}:\n{tb}", file=sys.stderr, flush=True)
+            _jobs[job_id]["status"] = "error"
+            _jobs[job_id]["error"] = tb
+    finally:
+        # Always release — even on error — so queued jobs can proceed
+        _session_semaphore.release()
+

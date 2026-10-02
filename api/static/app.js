@@ -31,6 +31,8 @@ document.addEventListener('DOMContentLoaded', () => {
   const rangePreprocess = document.getElementById('range-preprocess');
   const preprocessVal = document.getElementById('preprocess-val');
   const inputPrompt = document.getElementById('input-prompt');
+  const inputLearnerId = document.getElementById('input-learner-id');
+  const inputTutorId = document.getElementById('input-tutor-id');
   const btnSubmit = document.getElementById('btn-submit');
 
   // States & Panels
@@ -104,6 +106,120 @@ document.addEventListener('DOMContentLoaded', () => {
   checkHealth();
   setInterval(checkHealth, 10000);
   updateHistoryBadge();
+  initBatch();
+
+  // ── Batch Session Queue ──────────────────────────────────────────────────
+  function initBatch() {
+    const btnBatchSubmit = document.getElementById('btn-batch-submit');
+    const batchProgressArea = document.getElementById('batch-progress-area');
+    const batchSummary = document.getElementById('batch-summary');
+    const batchJobsList = document.getElementById('batch-jobs-list');
+
+    let batchPollInterval = null;
+
+    btnBatchSubmit.addEventListener('click', async () => {
+      const learnerId = document.getElementById('batch-learner-id').value.trim();
+      const tutorId   = document.getElementById('batch-tutor-id').value.trim();
+      const urlsRaw   = document.getElementById('batch-urls').value.trim();
+
+      if (!learnerId || !tutorId) {
+        alert('Please enter both Learner ID and Tutor ID for batch processing.');
+        return;
+      }
+      const urls = urlsRaw.split('\n').map(u => u.trim()).filter(u => u.length > 0);
+      if (urls.length === 0) {
+        alert('Please enter at least one URL.');
+        return;
+      }
+      if (urls.length > 20) {
+        alert('Maximum 20 URLs per batch.');
+        return;
+      }
+
+      btnBatchSubmit.disabled = true;
+      btnBatchSubmit.textContent = 'Queueing...';
+
+      try {
+        const res = await fetch('/transcribe/batch', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ file_urls: urls, learner_id: learnerId, tutor_id: tutorId })
+        });
+
+        if (!res.ok) {
+          const err = await res.json();
+          throw new Error(err.detail || 'Batch submit failed.');
+        }
+
+        const batch = await res.json();
+        batchProgressArea.classList.remove('hidden');
+        renderBatchJobs(batch, batchJobsList);
+        updateBatchSummary(batch, batchSummary);
+
+        // Poll batch status
+        if (batchPollInterval) clearInterval(batchPollInterval);
+        batchPollInterval = setInterval(async () => {
+          const r = await fetch(`/batches/${batch.batch_id}`);
+          const updated = await r.json();
+          renderBatchJobs(updated, batchJobsList);
+          updateBatchSummary(updated, batchSummary);
+
+          if (updated.queued === 0 && updated.processing === 0) {
+            clearInterval(batchPollInterval);
+            btnBatchSubmit.disabled = false;
+            btnBatchSubmit.textContent = '🚀 Queue All Sessions';
+            showToast(`Batch complete! ${updated.done} done, ${updated.error} errors.`);
+          }
+        }, 2000);
+
+      } catch (err) {
+        alert(err.message);
+        btnBatchSubmit.disabled = false;
+        btnBatchSubmit.textContent = '🚀 Queue All Sessions';
+      }
+    });
+  }
+
+  function renderBatchJobs(batch, container) {
+    container.innerHTML = '';
+    batch.job_ids.forEach((jid, idx) => {
+      const statusColors = { queued: '#f59e0b', processing: '#6366f1', done: '#10b981', error: '#ef4444' };
+      // Look up each job's status from per-job endpoint (cached in batch counts for now)
+      const jobEl = document.createElement('div');
+      jobEl.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:0.5rem 0.75rem;background:rgba(255,255,255,0.04);border-radius:6px;font-size:0.8rem;';
+      jobEl.innerHTML = `
+        <span style="font-family:monospace;color:#94a3b8;">Session ${idx + 1}</span>
+        <a href="#" onclick="navigator.clipboard.writeText('${jid}');return false;" style="color:#6366f1;font-family:monospace;font-size:0.72rem;">${jid.slice(0, 8)}…</a>
+        <span id="job-status-${jid}" style="padding:2px 8px;border-radius:10px;background:rgba(245,158,11,0.2);color:#f59e0b;font-weight:600;">QUEUED</span>
+      `;
+      container.appendChild(jobEl);
+
+      // Poll individual job status
+      (async () => {
+        let done = false;
+        while (!done) {
+          await new Promise(r => setTimeout(r, 2500));
+          try {
+            const r = await fetch(`/jobs/${jid}`);
+            const j = await r.json();
+            const el = document.getElementById(`job-status-${jid}`);
+            if (el) {
+              const colors = { queued: '#f59e0b', processing: '#818cf8', done: '#34d399', error: '#f87171' };
+              const bgs = { queued: 'rgba(245,158,11,0.2)', processing: 'rgba(99,102,241,0.2)', done: 'rgba(16,185,129,0.2)', error: 'rgba(239,68,68,0.2)' };
+              el.textContent = j.status.toUpperCase();
+              el.style.color = colors[j.status] || '#94a3b8';
+              el.style.background = bgs[j.status] || 'transparent';
+            }
+            if (j.status === 'done' || j.status === 'error') done = true;
+          } catch(e) { done = true; }
+        }
+      })();
+    });
+  }
+
+  function updateBatchSummary(batch, el) {
+    el.textContent = `${batch.done} done · ${batch.processing} processing · ${batch.queued} queued · ${batch.error} errors`;
+  }
 
   // ── Health Check ────────────────────────────────────────────────────────
   async function checkHealth() {
@@ -238,7 +354,9 @@ document.addEventListener('DOMContentLoaded', () => {
       language: selectLanguage.value || null,
       translate: checkTranslate.checked,
       preprocess: parseInt(rangePreprocess.value, 10),
-      prompt: inputPrompt.value.trim() || null
+      prompt: inputPrompt.value.trim() || null,
+      learner_id: inputLearnerId.value.trim() || null,
+      tutor_id: inputTutorId.value.trim() || null
     };
 
     btnSubmit.disabled = true;

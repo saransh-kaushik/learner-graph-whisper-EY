@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Learner Progress Dashboard | Knowledge Graph</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=Inter:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="dashboard.css">
+  <!-- Chart.js for Sparklines -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <!-- Neovis.js for Graph Visualization -->
+  <script src="https://unpkg.com/neovis.js@2.2.0/dist/neovis.js"></script>
+</head>
+<body>
+  <div class="app-layout">
+    <!-- Sidebar -->
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <div class="logo">
+          <div class="logo-mark">KG</div>
+          <h1>Learner<br><span>Tracker</span></h1>
+        </div>
+      </div>
+      <div class="learner-selector-wrapper">
+        <label for="learner-select">Select Learner</label>
+        <select id="learner-select">
+          <option value="" disabled selected>Loading learners...</option>
+        </select>
+      </div>
+      <nav class="sidebar-nav">
+        <a href="#overview" class="nav-item active">📊 Overview</a>
+        <a href="#vocabulary" class="nav-item">📚 Vocabulary</a>
+        <a href="#grammar" class="nav-item">✍️ Grammar</a>
+        <a href="#graph" class="nav-item">🕸️ Graph Explorer</a>
+        <a href="/" class="nav-item back-link">← Back to Diarization</a>
+      </nav>
+    </aside>
+
+    <!-- Main Content -->
+    <main class="main-content">
+      <header class="topbar">
+        <div>
+          <h2 id="current-learner-name">Select a learner</h2>
+          <p class="subtitle" id="current-learner-level">CEFR Level: --</p>
+        </div>
+        <div class="header-actions">
+          <button id="btn-refresh" class="btn btn-primary">Refresh Data</button>
+        </div>
+      </header>
+
+      <div class="dashboard-scroll-area">
+        
+        <!-- Loading State -->
+        <div id="loading-overlay" class="loading-overlay hidden">
+          <div class="spinner"></div>
+          <p>Analyzing knowledge graph...</p>
+        </div>
+
+        <div id="dashboard-content" class="hidden">
+          
+          <!-- AI Summary -->
+          <section class="panel ai-summary-panel gradient-border">
+            <div class="panel-header">
+              <h3>✨ AI Progress Summary</h3>
+            </div>
+            <p id="ai-summary-text" class="ai-text"></p>
+            <div class="practice-next">
+              <strong>Practice Next:</strong> <span id="ai-practice-next"></span>
+            </div>
+          </section>
+
+          <!-- Metrics Grid -->
+          <section class="metrics-grid">
+            <div class="metric-card">
+              <span class="metric-title">Talk-Time Ratio</span>
+              <div class="metric-value-row">
+                <span id="metric-ttr" class="metric-value">--</span>
+                <span id="trend-ttr" class="trend-badge">--</span>
+              </div>
+            </div>
+            <div class="metric-card">
+              <span class="metric-title">Speaking Rate (WPM)</span>
+              <div class="metric-value-row">
+                <span id="metric-wpm" class="metric-value">--</span>
+                <span id="trend-wpm" class="trend-badge">--</span>
+              </div>
+            </div>
+            <div class="metric-card">
+              <span class="metric-title">Words per Turn</span>
+              <div class="metric-value-row">
+                <span id="metric-wpt" class="metric-value">--</span>
+                <span id="trend-wpt" class="trend-badge">--</span>
+              </div>
+            </div>
+            <div class="metric-card">
+              <span class="metric-title">Code-Switch Ratio</span>
+              <div class="metric-value-row">
+                <span id="metric-csr" class="metric-value">--</span>
+                <span id="trend-csr" class="trend-badge">--</span>
+              </div>
+            </div>
+          </section>
+
+          <div class="two-col-grid">
+            <!-- Vocabulary Panel -->
+            <section class="panel" id="vocabulary">
+              <div class="panel-header">
+                <h3>📚 New Vocabulary</h3>
+              </div>
+              <div class="table-container">
+                <table class="data-table">
+                  <thead>
+                    <tr>
+                      <th>Word</th>
+                      <th>Mastery</th>
+                      <th>CEFR</th>
+                    </tr>
+                  </thead>
+                  <tbody id="vocab-table-body">
+                    <!-- Populated by JS -->
+                  </tbody>
+                </table>
+              </div>
+            </section>
+
+            <!-- Goals Tracker -->
+            <section class="panel" id="goals">
+              <div class="panel-header">
+                <h3>🎯 Learning Goals</h3>
+              </div>
+              <div class="goals-list" id="goals-list">
+                <!-- Populated by JS -->
+              </div>
+            </section>
+          </div>
+
+          <!-- Grammar Errors Panel -->
+          <section class="panel" id="grammar">
+            <div class="panel-header">
+              <h3>✍️ Grammar Trajectory</h3>
+            </div>
+            <div class="grammar-lists-container">
+              <div class="grammar-col">
+                <h4>Fading Errors (Improving)</h4>
+                <ul id="fading-errors-list" class="error-list"></ul>
+              </div>
+              <div class="grammar-col">
+                <h4>Persistent Errors (Needs Work)</h4>
+                <ul id="persistent-errors-list" class="error-list"></ul>
+              </div>
+            </div>
+          </section>
+
+          <!-- Graph Visualizer -->
+          <section class="panel graph-panel" id="graph">
+            <div class="panel-header">
+              <h3>🕸️ Learner Knowledge Graph</h3>
+              <p class="subtitle">Interactive view of sessions, vocabulary, and grammar</p>
+            </div>
+            <div id="viz" class="neovis-container"></div>
+          </section>
+          
+        </div>
+      </div>
+    </main>
+  </div>
+  <script src="dashboard.js"></script>
+</body>
+</html>

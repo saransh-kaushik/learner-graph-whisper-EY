@@ -35,6 +35,7 @@ RUN pip3 install --no-cache-dir -r api/requirements.txt
 # ── Application source ────────────────────────────────────────────────────────
 COPY core/  core/
 COPY api/   api/
+COPY knowledge_graph/ knowledge_graph/
 
 # ── Pre-built model cache ─────────────────────────────────────────────────────
 # model_cache/ contains the whisper and pyannote models baked into the image.
@@ -54,7 +55,4 @@ EXPOSE 8000
 #   Multiple workers = multiple model copies = OOM on a single GPU.
 #   Concurrency is handled by the job queue in server.py.
 #   For multi-GPU: run one container per GPU with CUDA_VISIBLE_DEVICES=N.
-CMD ["uvicorn", "api.server:app", \
-     "--host", "0.0.0.0", \
-     "--port", "8000", \
-     "--workers", "1"]
+CMD ["sh", "-c", "python -m knowledge_graph.schema && uvicorn api.server:app --host 0.0.0.0 --port 8000 --workers 1"]

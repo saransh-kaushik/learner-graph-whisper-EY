@@ -31,6 +31,9 @@
           <span class="status-dot"></span>
           <span id="health-text">Checking API...</span>
         </div>
+        <a href="/dashboard.html" class="btn btn-primary btn-sm">
+          📊 Learner Dashboard
+        </a>
         <button id="btn-history" class="btn btn-secondary btn-sm">
           📜 History (<span id="history-count">0</span>)
         </button>
@@ -50,9 +53,10 @@
         </div>
 
         <!-- Mode Selector Tabs -->
-        <div class="tab-group">
+        <div class="tab-group" style="grid-template-columns: 1fr 1fr 1fr">
           <button id="tab-url" class="tab-btn active" data-tab="url">🌐 Audio URL</button>
           <button id="tab-file" class="tab-btn" data-tab="file">📁 Upload File</button>
+          <button id="tab-batch" class="tab-btn" data-tab="batch">📦 Batch Sessions</button>
         </div>
 
         <form id="transcribe-form">
@@ -171,6 +175,22 @@
             </div>
           </details>
 
+          <!-- Knowledge Graph Inputs -->
+          <div style="background: rgba(99, 102, 241, 0.05); padding: 1rem; border-radius: 8px; border: 1px solid rgba(99, 102, 241, 0.2); margin-top: 1rem; margin-bottom: 1rem;">
+            <h4 style="margin-bottom: 0.8rem; font-size: 0.9rem; color: #818cf8;">🧠 Knowledge Graph Integration</h4>
+            <div class="options-grid">
+              <div class="form-group">
+                <label for="input-learner-id">Learner ID (Optional)</label>
+                <input type="text" id="input-learner-id" placeholder="e.g. learner_001">
+              </div>
+              <div class="form-group">
+                <label for="input-tutor-id">Tutor ID (Optional)</label>
+                <input type="text" id="input-tutor-id" placeholder="e.g. tutor_001">
+              </div>
+            </div>
+            <small class="help-text">If provided, the session will be automatically analyzed and added to the Learner Progress Dashboard.</small>
+          </div>
+
           <!-- Submit Button -->
           <button type="submit" id="btn-submit" class="btn btn-primary btn-block btn-lg">
             <span class="btn-icon">⚡</span> Start Transcription & Diarization
@@ -213,6 +233,34 @@
               <button id="btn-copy-curl" class="btn btn-xs btn-ghost">Copy</button>
             </div>
             <code id="curl-code">curl http://localhost:8000/jobs/...</code>
+          </div>
+        </div>
+
+        <!-- Batch Upload Mode -->
+        <div id="tab-content-batch" class="tab-content">
+          <div class="form-group">
+            <label>Learner ID</label>
+            <input type="text" id="batch-learner-id" placeholder="e.g. learner_001">
+          </div>
+          <div class="form-group">
+            <label>Tutor ID</label>
+            <input type="text" id="batch-tutor-id" placeholder="e.g. tutor_001">
+          </div>
+          <div class="form-group">
+            <label>Session URLs <small class="help-text">(one per line)</small></label>
+            <textarea id="batch-urls" rows="6" placeholder="https://example.com/session1.mp4&#10;https://example.com/session2.mp4&#10;..." style="width:100%;padding:0.65rem;background:var(--bg-input);border:1px solid var(--border-color);border-radius:8px;color:var(--text-main);font-family:inherit;font-size:0.85rem;resize:vertical;outline:none;"></textarea>
+            <small class="help-text">Max 20 URLs. Processed 2 at a time automatically.</small>
+          </div>
+          <button id="btn-batch-submit" class="btn btn-primary btn-block" style="margin-top:0.5rem">
+            🚀 Queue All Sessions
+          </button>
+          <!-- Batch Progress -->
+          <div id="batch-progress-area" class="hidden" style="margin-top:1rem">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.5rem">
+              <span style="font-size:0.85rem;font-weight:600;">Batch Progress</span>
+              <span id="batch-summary" style="font-size:0.8rem;color:var(--text-muted)"></span>
+            </div>
+            <div id="batch-jobs-list" style="display:flex;flex-direction:column;gap:0.4rem;"></div>
           </div>
         </div>
 
