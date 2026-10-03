@@ -18,6 +18,8 @@ Speaker assignment heuristics (in priority order)
          {"SPEAKER_00": "learner", "SPEAKER_01": "tutor"}
   b) If exactly 2 speakers found, the one with less total talk-time
      is assigned "learner" (tutors usually dominate early sessions).
+     The ingestion orchestrator then confirms or swaps this with a cheap
+     LLM check, because talkative learners break the heuristic.
   c) Otherwise all segments are labelled "unknown".
 """
 from __future__ import annotations
@@ -100,6 +102,22 @@ class ParsedTranscript:
     def total_talk_sec(self) -> float:
         return self.learner_talk_sec + self.tutor_talk_sec
 
+    @property
+    def speaker_labels(self) -> List[str]:
+        return sorted({t.speaker_label for t in self.turns if t.speaker_label})
+
+    def assign_roles(self, learner_label: Optional[str], tutor_label: Optional[str]) -> None:
+        """Re-assign learner/tutor roles (e.g. after LLM role identification)."""
+        self.learner_label = learner_label
+        self.tutor_label = tutor_label
+        for turn in self.turns:
+            if turn.speaker_label == learner_label:
+                turn.role = "learner"
+            elif turn.speaker_label == tutor_label:
+                turn.role = "tutor"
+            else:
+                turn.role = "unknown"
+
 
 # ── Parser ────────────────────────────────────────────────────────────────────
 
@@ -137,6 +155,8 @@ class TranscriptParser:
 
         turns: List[Turn] = []
         for seg in raw_segments:
+            if not str(seg.get("text", "")).strip():
+                continue
             label = str(seg.get("speaker", "")).strip()
             start = float(seg.get("start", 0.0))
             end = float(seg.get("end", start))

@@ -3,169 +3,227 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Learner Progress Dashboard | Knowledge Graph</title>
+  <title>Progress Report · EnglishYaari</title>
+  <meta name="description" content="Your spoken English progress: what improved, what to focus on, and what to practise next.">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 32 32%27%3E%3Crect width=%2732%27 height=%2732%27 rx=%278%27 fill=%27%236d28d9%27/%3E%3Ctext x=%2716%27 y=%2721%27 font-family=%27Arial%27 font-size=%2713%27 font-weight=%27700%27 fill=%27white%27 text-anchor=%27middle%27%3EEY%3C/text%3E%3C/svg%3E">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=Inter:wght@400;500&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="theme.css">
   <link rel="stylesheet" href="dashboard.css">
-  <!-- Chart.js for Sparklines -->
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-  <!-- Neovis.js for Graph Visualization -->
-  <script src="https://unpkg.com/neovis.js@2.2.0/dist/neovis.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js" defer></script>
 </head>
 <body>
-  <div class="app-layout">
-    <!-- Sidebar -->
-    <aside class="sidebar">
-      <div class="sidebar-header">
-        <div class="logo">
-          <div class="logo-mark">KG</div>
-          <h1>Learner<br><span>Tracker</span></h1>
-        </div>
+  <header class="topnav">
+    <div class="topnav-inner">
+      <a class="brand" href="/">
+        <span class="brand-mark" aria-hidden="true">EY</span>
+        <span class="brand-name">EnglishYaari <span>Progress</span></span>
+      </a>
+      <nav class="nav-links" aria-label="Main">
+        <a class="nav-link" href="/">
+          <svg class="icon" aria-hidden="true"><use href="icons.svg#i-mic"/></svg><span>Session Studio</span>
+        </a>
+        <a class="nav-link" href="/dashboard.html" aria-current="page">
+          <svg class="icon" aria-hidden="true"><use href="icons.svg#i-chart"/></svg><span>Progress reports</span>
+        </a>
+      </nav>
+    </div>
+  </header>
+
+  <div class="toolbar no-print">
+    <div class="toolbar-inner">
+      <div class="field toolbar-field">
+        <label class="label" for="learner-select">Learner</label>
+        <select id="learner-select" class="select"><option value="">Loading…</option></select>
       </div>
-      <div class="learner-selector-wrapper">
-        <label for="learner-select">Select Learner</label>
-        <select id="learner-select">
-          <option value="" disabled selected>Loading learners...</option>
+      <div class="field toolbar-field toolbar-narrow">
+        <label class="label" for="window-select">Covering</label>
+        <select id="window-select" class="select">
+          <option value="3">Last 3 sessions</option>
+          <option value="5" selected>Last 5 sessions</option>
+          <option value="10">Last 10 sessions</option>
         </select>
       </div>
-      <nav class="sidebar-nav">
-        <a href="#overview" class="nav-item active">📊 Overview</a>
-        <a href="#vocabulary" class="nav-item">📚 Vocabulary</a>
-        <a href="#grammar" class="nav-item">✍️ Grammar</a>
-        <a href="#graph" class="nav-item">🕸️ Graph Explorer</a>
-        <a href="/" class="nav-item back-link">← Back to Diarization</a>
-      </nav>
-    </aside>
-
-    <!-- Main Content -->
-    <main class="main-content">
-      <header class="topbar">
-        <div>
-          <h2 id="current-learner-name">Select a learner</h2>
-          <p class="subtitle" id="current-learner-level">CEFR Level: --</p>
-        </div>
-        <div class="header-actions">
-          <button id="btn-refresh" class="btn btn-primary">Refresh Data</button>
-        </div>
-      </header>
-
-      <div class="dashboard-scroll-area">
-        
-        <!-- Loading State -->
-        <div id="loading-overlay" class="loading-overlay hidden">
-          <div class="spinner"></div>
-          <p>Analyzing knowledge graph...</p>
-        </div>
-
-        <div id="dashboard-content" class="hidden">
-          
-          <!-- AI Summary -->
-          <section class="panel ai-summary-panel gradient-border">
-            <div class="panel-header">
-              <h3>✨ AI Progress Summary</h3>
-            </div>
-            <p id="ai-summary-text" class="ai-text"></p>
-            <div class="practice-next">
-              <strong>Practice Next:</strong> <span id="ai-practice-next"></span>
-            </div>
-          </section>
-
-          <!-- Metrics Grid -->
-          <section class="metrics-grid">
-            <div class="metric-card">
-              <span class="metric-title">Talk-Time Ratio</span>
-              <div class="metric-value-row">
-                <span id="metric-ttr" class="metric-value">--</span>
-                <span id="trend-ttr" class="trend-badge">--</span>
-              </div>
-            </div>
-            <div class="metric-card">
-              <span class="metric-title">Speaking Rate (WPM)</span>
-              <div class="metric-value-row">
-                <span id="metric-wpm" class="metric-value">--</span>
-                <span id="trend-wpm" class="trend-badge">--</span>
-              </div>
-            </div>
-            <div class="metric-card">
-              <span class="metric-title">Words per Turn</span>
-              <div class="metric-value-row">
-                <span id="metric-wpt" class="metric-value">--</span>
-                <span id="trend-wpt" class="trend-badge">--</span>
-              </div>
-            </div>
-            <div class="metric-card">
-              <span class="metric-title">Code-Switch Ratio</span>
-              <div class="metric-value-row">
-                <span id="metric-csr" class="metric-value">--</span>
-                <span id="trend-csr" class="trend-badge">--</span>
-              </div>
-            </div>
-          </section>
-
-          <div class="two-col-grid">
-            <!-- Vocabulary Panel -->
-            <section class="panel" id="vocabulary">
-              <div class="panel-header">
-                <h3>📚 New Vocabulary</h3>
-              </div>
-              <div class="table-container">
-                <table class="data-table">
-                  <thead>
-                    <tr>
-                      <th>Word</th>
-                      <th>Mastery</th>
-                      <th>CEFR</th>
-                    </tr>
-                  </thead>
-                  <tbody id="vocab-table-body">
-                    <!-- Populated by JS -->
-                  </tbody>
-                </table>
-              </div>
-            </section>
-
-            <!-- Goals Tracker -->
-            <section class="panel" id="goals">
-              <div class="panel-header">
-                <h3>🎯 Learning Goals</h3>
-              </div>
-              <div class="goals-list" id="goals-list">
-                <!-- Populated by JS -->
-              </div>
-            </section>
-          </div>
-
-          <!-- Grammar Errors Panel -->
-          <section class="panel" id="grammar">
-            <div class="panel-header">
-              <h3>✍️ Grammar Trajectory</h3>
-            </div>
-            <div class="grammar-lists-container">
-              <div class="grammar-col">
-                <h4>Fading Errors (Improving)</h4>
-                <ul id="fading-errors-list" class="error-list"></ul>
-              </div>
-              <div class="grammar-col">
-                <h4>Persistent Errors (Needs Work)</h4>
-                <ul id="persistent-errors-list" class="error-list"></ul>
-              </div>
-            </div>
-          </section>
-
-          <!-- Graph Visualizer -->
-          <section class="panel graph-panel" id="graph">
-            <div class="panel-header">
-              <h3>🕸️ Learner Knowledge Graph</h3>
-              <p class="subtitle">Interactive view of sessions, vocabulary, and grammar</p>
-            </div>
-            <div id="viz" class="neovis-container"></div>
-          </section>
-          
-        </div>
+      <div class="toolbar-actions">
+        <button id="btn-refresh" class="btn btn-secondary" type="button" disabled title="Regenerate the written summary">
+          <svg class="icon" aria-hidden="true"><use href="icons.svg#i-refresh"/></svg><span>Regenerate</span>
+        </button>
+        <button id="btn-print" class="btn btn-secondary" type="button" disabled>
+          <svg class="icon" aria-hidden="true"><use href="icons.svg#i-printer"/></svg><span>Save as PDF</span>
+        </button>
       </div>
-    </main>
+    </div>
   </div>
-  <script src="dashboard.js"></script>
+
+  <main class="report" id="report-root" aria-live="polite">
+    <!-- Empty -->
+    <div id="state-empty" class="card empty">
+      <span class="empty-icon"><svg class="icon icon-lg" aria-hidden="true"><use href="icons.svg#i-chart"/></svg></span>
+      <h3>Choose a learner</h3>
+      <p>Pick a learner above to see what has improved, what to focus on next, and a practice plan for the week.</p>
+    </div>
+
+    <!-- Loading -->
+    <div id="state-loading" class="hidden" aria-busy="true">
+      <div class="skeleton" style="height: 168px"></div>
+      <div class="skeleton-grid">
+        <div class="skeleton" style="height: 120px"></div><div class="skeleton" style="height: 120px"></div>
+        <div class="skeleton" style="height: 120px"></div><div class="skeleton" style="height: 120px"></div>
+      </div>
+      <div class="skeleton" style="height: 260px"></div>
+      <p class="help center">Preparing the report — this can take a few seconds the first time.</p>
+    </div>
+
+    <!-- Error -->
+    <div id="state-error" class="card empty hidden">
+      <span class="empty-icon danger"><svg class="icon icon-lg" aria-hidden="true"><use href="icons.svg#i-alert"/></svg></span>
+      <h3>Couldn't load this report</h3>
+      <p id="error-text"></p>
+      <button id="btn-retry" class="btn btn-secondary btn-sm" type="button">Try again</button>
+    </div>
+
+    <!-- Report -->
+    <div id="state-report" class="hidden">
+
+      <!-- Hero -->
+      <section class="card hero" aria-labelledby="hero-headline">
+        <div class="hero-top">
+          <div>
+            <p class="eyebrow" id="hero-learner"></p>
+            <h1 id="hero-headline" class="hero-headline"></h1>
+          </div>
+          <div class="level" id="level-box"></div>
+        </div>
+        <p id="hero-summary" class="hero-summary"></p>
+        <div class="hero-meta" id="hero-meta"></div>
+        <div id="data-quality" class="note hidden"></div>
+      </section>
+
+      <!-- At a glance -->
+      <section aria-labelledby="glance-title" class="section">
+        <div class="section-head">
+          <h2 id="glance-title" class="section-title">At a glance</h2>
+          <p class="section-sub" id="glance-sub"></p>
+        </div>
+        <div class="metric-grid" id="metric-grid"></div>
+      </section>
+
+      <!-- Improved / Focus -->
+      <div class="two-col section">
+        <section class="card card-pad" aria-labelledby="wins-title">
+          <div class="card-header">
+            <h2 id="wins-title" class="card-title"><svg class="icon" aria-hidden="true"><use href="icons.svg#i-trend-up"/></svg>What improved</h2>
+          </div>
+          <ul class="win-list" id="wins-list"></ul>
+          <div id="improved-grammar" class="sub-block hidden">
+            <h3 class="sub-title">Fewer mistakes with</h3>
+            <div class="tag-row" id="improved-grammar-tags"></div>
+          </div>
+          <div id="independent-words" class="sub-block hidden">
+            <h3 class="sub-title">Now using on your own</h3>
+            <div class="tag-row" id="independent-words-tags"></div>
+          </div>
+        </section>
+
+        <section class="card card-pad" aria-labelledby="focus-title">
+          <div class="card-header">
+            <h2 id="focus-title" class="card-title"><svg class="icon" aria-hidden="true"><use href="icons.svg#i-target"/></svg>Focus next</h2>
+          </div>
+          <div id="focus-list" class="focus-list"></div>
+        </section>
+      </div>
+
+      <!-- Practice plan -->
+      <section class="card card-pad section" aria-labelledby="plan-title">
+        <div class="card-header">
+          <div>
+            <h2 id="plan-title" class="card-title"><svg class="icon" aria-hidden="true"><use href="icons.svg#i-calendar"/></svg>Your practice plan for this week</h2>
+            <p class="card-subtitle">About 20 minutes in total. Tick tasks off as you go.</p>
+          </div>
+        </div>
+        <ol class="plan" id="plan-list"></ol>
+        <p class="milestone" id="milestone"></p>
+      </section>
+
+      <!-- Vocabulary -->
+      <section class="card card-pad section" aria-labelledby="vocab-title">
+        <div class="card-header">
+          <div>
+            <h2 id="vocab-title" class="card-title"><svg class="icon" aria-hidden="true"><use href="icons.svg#i-book"/></svg>Words &amp; phrases</h2>
+            <p class="card-subtitle" id="vocab-sub"></p>
+          </div>
+        </div>
+        <div class="segmented vocab-tabs" role="tablist" aria-label="Vocabulary">
+          <button type="button" role="tab" data-vtab="new" aria-selected="true" aria-controls="vpanel">New <span class="count" data-count="new">0</span></button>
+          <button type="button" role="tab" data-vtab="fix" aria-selected="false" aria-controls="vpanel" tabindex="-1">To fix <span class="count" data-count="fix">0</span></button>
+          <button type="button" role="tab" data-vtab="try" aria-selected="false" aria-controls="vpanel" tabindex="-1">To try <span class="count" data-count="try">0</span></button>
+        </div>
+        <div id="vpanel" role="tabpanel" class="word-grid"></div>
+        <details class="level-guide">
+          <summary>What do the word levels mean?</summary>
+          <dl id="level-guide-list"></dl>
+        </details>
+      </section>
+
+      <!-- Grammar detail -->
+      <section class="card card-pad section" aria-labelledby="grammar-title">
+        <div class="card-header">
+          <div>
+            <h2 id="grammar-title" class="card-title"><svg class="icon" aria-hidden="true"><use href="icons.svg#i-pen"/></svg>Grammar over time</h2>
+            <p class="card-subtitle" id="grammar-sub">How often each type of mistake appeared, session by session.</p>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="table" id="grammar-table">
+            <thead><tr><th scope="col">Area</th><th scope="col">Status</th><th scope="col">Session by session</th><th scope="col">Latest example</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- Strengths / Goals -->
+      <div class="two-col section">
+        <section class="card card-pad" aria-labelledby="strengths-title">
+          <div class="card-header">
+            <h2 id="strengths-title" class="card-title"><svg class="icon" aria-hidden="true"><use href="icons.svg#i-star"/></svg>In your own words</h2>
+          </div>
+          <ul class="quote-list" id="strengths-list"></ul>
+        </section>
+        <section class="card card-pad" aria-labelledby="goals-title">
+          <div class="card-header">
+            <h2 id="goals-title" class="card-title"><svg class="icon" aria-hidden="true"><use href="icons.svg#i-target"/></svg>Your goals</h2>
+          </div>
+          <ul class="goal-list" id="goals-list"></ul>
+        </section>
+      </div>
+
+      <!-- Sessions -->
+      <section class="card card-pad section" aria-labelledby="sessions-title">
+        <div class="card-header">
+          <h2 id="sessions-title" class="card-title"><svg class="icon" aria-hidden="true"><use href="icons.svg#i-message"/></svg>Sessions in this report</h2>
+        </div>
+        <ol class="timeline" id="timeline"></ol>
+      </section>
+
+      <!-- Tutor tools -->
+      <details class="card tutor-tools section no-print" id="tutor-tools">
+        <summary>
+          <svg class="icon" aria-hidden="true"><use href="icons.svg#i-graph"/></svg>
+          <span>Tutor view: knowledge graph</span>
+          <svg class="icon chev" aria-hidden="true"><use href="icons.svg#i-chevron-down"/></svg>
+        </summary>
+        <div class="tutor-body">
+          <p class="help">Sessions, grammar areas, words used and goals for this learner. Drag to explore.</p>
+          <div id="graph" class="graph" role="img" aria-label="Knowledge graph of the learner's sessions"></div>
+        </div>
+      </details>
+
+      <p class="report-foot" id="report-foot"></p>
+    </div>
+  </main>
+
+  <script src="common.js" defer></script>
+  <script src="dashboard.js" defer></script>
 </body>
 </html>

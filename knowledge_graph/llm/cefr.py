@@ -1,12 +1,17 @@
 """
 knowledge_graph/llm/cefr.py
 ────────────────────────────
-CEFR level lookup for vocabulary words.
+CEFR level lookup for vocabulary words and phrases.
 
 Priority:
-  1. Check local cefr_wordlist.json (fast, free)
-  2. OpenAI fallback classification (costs ~$0.001/batch)
-  3. Cache OpenAI results back to file
+  1. Local cefr_wordlist.json cache (fast, free, consistent across sessions)
+  2. Level hint from the extraction model (already paid for)
+  3. OpenAI classification for anything still unknown
+  4. Cache results back to the file
+
+Words that cannot be classified get "unknown" (never a silent default level).
+The cache is shared by concurrent ingestion threads, so access is locked and
+the file is written atomically.
 
 CEFR levels: A1 < A2 < B1 < B2 < C1 < C2
 """
@@ -14,19 +19,24 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import tempfile
+import threading
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Mapping, Optional
 
 from openai import OpenAI
 
 from knowledge_graph.config import settings
+from knowledge_graph.taxonomy import CEFR_LEVELS
 
 logger = logging.getLogger(__name__)
 
-_CEFR_LEVELS = ("A1", "A2", "B1", "B2", "C1", "C2")
+UNKNOWN = "unknown"
 
 # In-memory cache (loaded from file on first use)
 _wordlist: Optional[Dict[str, str]] = None
+_lock = threading.RLock()
 
 _client: Optional[OpenAI] = None
 
@@ -34,76 +44,111 @@ _client: Optional[OpenAI] = None
 def _get_client() -> OpenAI:
     global _client
     if _client is None:
-        _client = OpenAI(api_key=settings.openai_api_key)
+        _client = OpenAI(api_key=settings.openai_api_key, max_retries=3)
     return _client
+
+
+def _normalize(word: str) -> str:
+    return " ".join(word.lower().split())
 
 
 def _load_wordlist() -> Dict[str, str]:
     global _wordlist
-    if _wordlist is not None:
-        return _wordlist
+    with _lock:
+        if _wordlist is not None:
+            return _wordlist
 
-    path = Path(settings.cefr_reference_path)
-    if path.exists():
-        _wordlist = json.loads(path.read_text(encoding="utf-8"))
-        logger.info("Loaded CEFR wordlist: %d entries from %s", len(_wordlist), path)
-    else:
-        logger.warning("CEFR wordlist not found at %s — using empty dict", path)
+        path = Path(settings.cefr_reference_path)
         _wordlist = {}
-    return _wordlist
+        if path.exists():
+            try:
+                raw = json.loads(path.read_text(encoding="utf-8"))
+                _wordlist = {
+                    _normalize(k): v for k, v in raw.items() if v in CEFR_LEVELS
+                }
+                logger.info("Loaded CEFR wordlist: %d entries from %s", len(_wordlist), path)
+            except (OSError, json.JSONDecodeError) as exc:
+                logger.error("CEFR wordlist at %s is unreadable (%s) — starting empty", path, exc)
+        else:
+            logger.warning("CEFR wordlist not found at %s — starting empty", path)
+        return _wordlist
 
 
 def _save_wordlist() -> None:
-    path = Path(settings.cefr_reference_path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(_wordlist, indent=2, ensure_ascii=False), encoding="utf-8"
-    )
+    """Atomically write the cache (temp file + rename) so concurrent readers
+    and crashes never see a half-written file."""
+    with _lock:
+        path = Path(settings.cefr_reference_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = json.dumps(dict(sorted(_wordlist.items())), indent=2, ensure_ascii=False)
+        fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".cefr_", suffix=".json")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(payload)
+            os.replace(tmp, path)
+        except Exception:
+            Path(tmp).unlink(missing_ok=True)
+            raise
 
 
 def lookup_cefr(word: str) -> str:
-    """Return the CEFR level for *word*, querying OpenAI if not cached."""
-    word = word.lower().strip()
-    wl = _load_wordlist()
-    if word in wl:
-        return wl[word]
-
-    level = _classify_via_openai([word]).get(word, "B1")
-    wl[word] = level
-    _save_wordlist()
-    return level
+    """Return the CEFR level for *word* (or "unknown")."""
+    return lookup_cefr_batch([word]).get(_normalize(word), UNKNOWN)
 
 
-def lookup_cefr_batch(words: List[str]) -> Dict[str, str]:
-    """Return a dict mapping each word to its CEFR level."""
-    wl = _load_wordlist()
-    result: Dict[str, str] = {}
-    missing: List[str] = []
+def lookup_cefr_batch(
+    words: List[str],
+    hints: Optional[Mapping[str, str]] = None,
+) -> Dict[str, str]:
+    """
+    Return a dict mapping each (normalised) word/phrase to its CEFR level.
 
-    for w in words:
-        w_clean = w.lower().strip()
-        if w_clean in wl:
-            result[w_clean] = wl[w_clean]
-        else:
-            missing.append(w_clean)
+    *hints* maps words to the level the extraction model already estimated;
+    they are used (and cached) before making another API call.
+    """
+    hints = {_normalize(k): v for k, v in (hints or {}).items() if v in CEFR_LEVELS}
+    with _lock:
+        wl = _load_wordlist()
+        result: Dict[str, str] = {}
+        missing: List[str] = []
+        dirty = False
+
+        for w in dict.fromkeys(_normalize(w) for w in words if w and w.strip()):
+            if w in wl:
+                result[w] = wl[w]
+            elif w in hints:
+                result[w] = wl[w] = hints[w]
+                dirty = True
+            else:
+                missing.append(w)
 
     if missing:
         classified = _classify_via_openai(missing)
-        for w, level in classified.items():
-            result[w] = level
-            wl[w] = level
-        _save_wordlist()
+        with _lock:
+            for w in missing:
+                level = classified.get(w)
+                if level in CEFR_LEVELS:
+                    result[w] = wl[w] = level
+                    dirty = True
+                else:
+                    result[w] = UNKNOWN
+
+    if dirty:
+        try:
+            _save_wordlist()
+        except OSError as exc:
+            logger.error("Could not save CEFR wordlist: %s", exc)
 
     return result
 
 
 def _classify_via_openai(words: List[str]) -> Dict[str, str]:
-    """Ask GPT-4o to classify a list of words by CEFR level."""
+    """Ask the model to classify words/phrases by CEFR level. Never raises."""
     word_list_str = "\n".join(f"- {w}" for w in words)
     prompt = (
-        "Classify each of the following English words by CEFR level "
-        "(A1, A2, B1, B2, C1, or C2). "
-        "Return a JSON object mapping each word (lowercase) to its level.\n\n"
+        "Classify each English word or phrase below by the CEFR level at which a "
+        "learner typically acquires it (A1, A2, B1, B2, C1 or C2). "
+        "Return a JSON object mapping each item exactly as written (lowercase) to its level.\n\n"
         f"{word_list_str}"
     )
     try:
@@ -113,22 +158,18 @@ def _classify_via_openai(words: List[str]) -> Dict[str, str]:
             messages=[
                 {
                     "role": "system",
-                    "content": (
-                        "You are an expert English language teacher. "
-                        "Return only valid JSON."
-                    ),
+                    "content": "You are an expert English language assessor. Return only valid JSON.",
                 },
                 {"role": "user", "content": prompt},
             ],
             temperature=0.0,
         )
         data = json.loads(response.choices[0].message.content or "{}")
-        # Validate levels
         return {
-            k.lower(): v if v in _CEFR_LEVELS else "B1"
+            _normalize(k): v.upper()
             for k, v in data.items()
-            if isinstance(v, str)
+            if isinstance(v, str) and v.upper() in CEFR_LEVELS
         }
     except Exception as exc:
         logger.error("CEFR OpenAI classification failed: %s", exc)
-        return {w: "B1" for w in words}
+        return {}
