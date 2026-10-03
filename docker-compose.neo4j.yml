@@ -1,0 +1,18 @@
+version: "3.8"
+
+services:
+  neo4j:
+    image: neo4j:5-community
+    container_name: neo4j-learner
+    ports:
+      - "7474:7474" # HTTP Web interface
+      - "7687:7687" # Bolt port
+    environment:
+      - NEO4J_AUTH=neo4j/password # Change this in production
+      - NEO4J_PLUGINS=["apoc", "graph-data-science"]
+    volumes:
+      - neo4j_data:/data
+    restart: unless-stopped
+
+volumes:
+  neo4j_data:
