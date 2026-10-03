@@ -3,368 +3,305 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Whisper Diarization Studio</title>
-  <meta name="description" content="AI-Powered Speech-to-Text with Speaker Diarization via Faster-Whisper and PyAnnote">
+  <title>Session Studio · EnglishYaari</title>
+  <meta name="description" content="Transcribe coaching sessions and add them to learners' progress reports.">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 32 32%27%3E%3Crect width=%2732%27 height=%2732%27 rx=%278%27 fill=%27%236d28d9%27/%3E%3Ctext x=%2716%27 y=%2721%27 font-family=%27Arial%27 font-size=%2713%27 font-weight=%27700%27 fill=%27white%27 text-anchor=%27middle%27%3EEY%3C/text%3E%3C/svg%3E">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Plus+Jakarta+Sans:wght@600;700;800&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="theme.css">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <div class="app-container">
-    <!-- Header -->
-    <header class="navbar">
-      <div class="brand">
-        <div class="logo-icon">
-          <div class="wave-bar"></div>
-          <div class="wave-bar"></div>
-          <div class="wave-bar"></div>
-          <div class="wave-bar"></div>
-        </div>
-        <div>
-          <h1 class="brand-title">Whisper<span>Diarize</span></h1>
-          <p class="brand-subtitle">FastAPI • PyAnnote • Faster-Whisper</p>
-        </div>
-      </div>
+  <header class="topnav">
+    <div class="topnav-inner">
+      <a class="brand" href="/">
+        <span class="brand-mark" aria-hidden="true">EY</span>
+        <span class="brand-name">EnglishYaari <span>Studio</span></span>
+      </a>
+      <nav class="nav-links" aria-label="Main">
+        <a class="nav-link" href="/" aria-current="page">
+          <svg class="icon" aria-hidden="true"><use href="icons.svg#i-mic"/></svg><span>Session Studio</span>
+        </a>
+        <a class="nav-link" href="/dashboard.html">
+          <svg class="icon" aria-hidden="true"><use href="icons.svg#i-chart"/></svg><span>Progress reports</span>
+        </a>
+      </nav>
       <div class="nav-actions">
-        <div id="health-badge" class="badge status-checking">
-          <span class="status-dot"></span>
-          <span id="health-text">Checking API...</span>
-        </div>
-        <a href="/dashboard.html" class="btn btn-primary btn-sm">
-          📊 Learner Dashboard
-        </a>
-        <button id="btn-history" class="btn btn-secondary btn-sm">
-          📜 History (<span id="history-count">0</span>)
+        <span id="health-badge" class="badge" role="status">
+          <span class="status-dot" aria-hidden="true"></span><span id="health-text">Checking…</span>
+        </span>
+        <button id="btn-history" class="btn btn-ghost btn-sm" type="button" aria-haspopup="dialog">
+          <svg class="icon" aria-hidden="true"><use href="icons.svg#i-clock"/></svg>
+          <span class="hide-sm">History</span>
+          <span id="history-count" class="count">0</span>
         </button>
-        <a href="/docs" target="_blank" class="btn btn-ghost btn-sm">
-          ⚡ API Docs ↗
+        <a href="/docs" target="_blank" rel="noopener" class="btn btn-ghost btn-sm hide-sm">
+          API docs <svg class="icon icon-sm" aria-hidden="true"><use href="icons.svg#i-external"/></svg>
         </a>
       </div>
-    </header>
+    </div>
+  </header>
 
-    <!-- Main Layout -->
-    <main class="main-grid">
-      <!-- Left Column: Input Form -->
-      <section class="panel panel-input">
-        <div class="panel-header">
-          <h2>Audio Input</h2>
-          <p>Submit a direct URL or upload a local audio file</p>
+  <main class="studio">
+    <!-- ── Input panel ─────────────────────────────────────────────────── -->
+    <section class="card card-pad panel-input" aria-labelledby="input-title">
+      <div class="card-header">
+        <div>
+          <h1 id="input-title" class="card-title">New analysis</h1>
+          <p class="card-subtitle">Transcribe a session and add it to the learner's progress report.</p>
         </div>
+      </div>
 
-        <!-- Mode Selector Tabs -->
-        <div class="tab-group" style="grid-template-columns: 1fr 1fr 1fr">
-          <button id="tab-url" class="tab-btn active" data-tab="url">🌐 Audio URL</button>
-          <button id="tab-file" class="tab-btn" data-tab="file">📁 Upload File</button>
-          <button id="tab-batch" class="tab-btn" data-tab="batch">📦 Batch Sessions</button>
-        </div>
+      <div class="segmented" role="tablist" aria-label="Input type">
+        <button type="button" role="tab" id="tab-url" data-tab="url" aria-selected="true" aria-controls="panel-url">
+          <svg class="icon" aria-hidden="true"><use href="icons.svg#i-link"/></svg>URL
+        </button>
+        <button type="button" role="tab" id="tab-file" data-tab="file" aria-selected="false" aria-controls="panel-file" tabindex="-1">
+          <svg class="icon" aria-hidden="true"><use href="icons.svg#i-upload"/></svg>Upload
+        </button>
+        <button type="button" role="tab" id="tab-batch" data-tab="batch" aria-selected="false" aria-controls="panel-batch" tabindex="-1">
+          <svg class="icon" aria-hidden="true"><use href="icons.svg#i-layers"/></svg>Batch
+        </button>
+      </div>
 
-        <form id="transcribe-form">
-          <!-- URL Mode -->
-          <div id="tab-content-url" class="tab-content active">
-            <div class="form-group">
-              <label for="input-url">Audio / Video URL</label>
-              <div class="input-with-button">
-                <input type="url" id="input-url" placeholder="https://example.com/recording.mp3" autocomplete="off">
-                <button type="button" id="btn-sample-url" class="btn btn-xs btn-ghost">Try Sample</button>
-              </div>
-              <small class="help-text">Direct HTTP(S) link to MP3, WAV, MP4, M4A, etc.</small>
+      <form id="transcribe-form" novalidate>
+        <!-- URL -->
+        <div id="panel-url" role="tabpanel" aria-labelledby="tab-url" class="tab-panel">
+          <div class="field">
+            <label class="label" for="input-url">Recording URL</label>
+            <div class="input-group">
+              <input id="input-url" class="input" type="url" placeholder="https://…/session.mp4" autocomplete="off">
+              <button type="button" id="btn-sample-url" class="btn btn-secondary btn-sm">Use sample</button>
             </div>
-          </div>
-
-          <!-- File Upload Mode -->
-          <div id="tab-content-file" class="tab-content">
-            <div class="form-group">
-              <label>Local Audio / Video File</label>
-              <div id="dropzone" class="dropzone">
-                <input type="file" id="file-input" accept="audio/*,video/*" hidden>
-                <div class="dropzone-content">
-                  <div class="upload-icon">☁️</div>
-                  <p class="dropzone-title">Drag & drop your file here, or <span>browse</span></p>
-                  <p class="dropzone-subtitle">MP3, WAV, M4A, AAC, FLAC, MP4 (max ~100MB)</p>
-                </div>
-              </div>
-              <div id="file-preview" class="file-preview hidden">
-                <div class="file-info">
-                  <span class="file-icon">🎵</span>
-                  <div class="file-details">
-                    <span id="file-name" class="file-name">recording.mp3</span>
-                    <span id="file-size" class="file-size">4.2 MB</span>
-                  </div>
-                  <button type="button" id="btn-remove-file" class="btn-icon">✕</button>
-                </div>
-                <audio id="audio-player" controls class="custom-audio-player"></audio>
-              </div>
-            </div>
-          </div>
-
-          <!-- Advanced Options Accordion -->
-          <details class="accordion" open>
-            <summary class="accordion-header">
-              <span>⚙️ Configuration & Processing Options</span>
-              <span class="accordion-arrow">▼</span>
-            </summary>
-            <div class="accordion-content">
-              <div class="options-grid">
-                <!-- Speakers -->
-                <div class="form-group">
-                  <label for="num-speakers">Number of Speakers</label>
-                  <div class="speaker-input-group">
-                    <input type="number" id="num-speakers" min="1" max="50" placeholder="Auto-detect" disabled>
-                    <label class="checkbox-label">
-                      <input type="checkbox" id="auto-speakers" checked>
-                      <span>Auto</span>
-                    </label>
-                  </div>
-                </div>
-
-                <!-- Language -->
-                <div class="form-group">
-                  <label for="select-language">Language</label>
-                  <select id="select-language">
-                    <option value="">Auto Detect</option>
-                    <option value="en">English</option>
-                    <option value="es">Spanish</option>
-                    <option value="fr">French</option>
-                    <option value="de">German</option>
-                    <option value="hi">Hindi</option>
-                    <option value="mr">Marathi</option>
-                    <option value="zh">Chinese</option>
-                    <option value="ja">Japanese</option>
-                    <option value="pt">Portuguese</option>
-                    <option value="it">Italian</option>
-                    <option value="ru">Russian</option>
-                  </select>
-                </div>
-
-                <!-- Translate -->
-                <div class="form-group checkbox-group">
-                  <label class="toggle-switch">
-                    <input type="checkbox" id="check-translate">
-                    <span class="toggle-slider"></span>
-                  </label>
-                  <div class="toggle-label">
-                    <span class="toggle-title">Translate to English</span>
-                    <small>Translates non-English audio to English transcript</small>
-                  </div>
-                </div>
-
-                <!-- Preprocess Level Slider -->
-                <div class="form-group full-width">
-                  <div class="label-with-val">
-                    <label for="range-preprocess">Audio Preprocessing</label>
-                    <span id="preprocess-val" class="badge badge-accent">0 - Off</span>
-                  </div>
-                  <input type="range" id="range-preprocess" min="0" max="4" value="0" step="1">
-                  <div class="slider-labels">
-                    <span>0: Off</span>
-                    <span>1: Sanitize</span>
-                    <span>2: Filter</span>
-                    <span>3: Denoise</span>
-                    <span>4: Normalize</span>
-                  </div>
-                </div>
-
-                <!-- Prompt / Hotwords -->
-                <div class="form-group full-width">
-                  <label for="input-prompt">Hotwords / Prompt Vocabulary</label>
-                  <input type="text" id="input-prompt" placeholder="e.g. OpenAI, PyTorch, Kiranji, Varsha">
-                  <small class="help-text">Guides Whisper spelling for domain terms</small>
-                </div>
-              </div>
-            </div>
-          </details>
-
-          <!-- Knowledge Graph Inputs -->
-          <div style="background: rgba(99, 102, 241, 0.05); padding: 1rem; border-radius: 8px; border: 1px solid rgba(99, 102, 241, 0.2); margin-top: 1rem; margin-bottom: 1rem;">
-            <h4 style="margin-bottom: 0.8rem; font-size: 0.9rem; color: #818cf8;">🧠 Knowledge Graph Integration</h4>
-            <div class="options-grid">
-              <div class="form-group">
-                <label for="input-learner-id">Learner ID (Optional)</label>
-                <input type="text" id="input-learner-id" placeholder="e.g. learner_001">
-              </div>
-              <div class="form-group">
-                <label for="input-tutor-id">Tutor ID (Optional)</label>
-                <input type="text" id="input-tutor-id" placeholder="e.g. tutor_001">
-              </div>
-            </div>
-            <small class="help-text">If provided, the session will be automatically analyzed and added to the Learner Progress Dashboard.</small>
-          </div>
-
-          <!-- Submit Button -->
-          <button type="submit" id="btn-submit" class="btn btn-primary btn-block btn-lg">
-            <span class="btn-icon">⚡</span> Start Transcription & Diarization
-          </button>
-        </form>
-      </section>
-
-      <!-- Right Column: Active Job & Results Studio -->
-      <section class="panel panel-results">
-        <!-- Default Idle State -->
-        <div id="state-idle" class="empty-state">
-          <div class="empty-illustration">🎙️</div>
-          <h3>Ready for Diarization</h3>
-          <p>Submit an audio URL or file on the left panel to begin speaker separation and speech-to-text transcription.</p>
-        </div>
-
-        <!-- Processing State -->
-        <div id="state-processing" class="processing-card hidden">
-          <div class="processing-header">
-            <div class="pulse-ring">
-              <div class="spinner"></div>
-            </div>
-            <div>
-              <div class="job-status-title">
-                <span id="job-status-badge" class="badge status-queued">QUEUED</span>
-                <span id="elapsed-timer" class="timer font-mono">00:00</span>
-              </div>
-              <p class="job-id-text">Job ID: <code id="active-job-id">...</code> <button id="btn-copy-job-id" class="btn-icon" title="Copy Job ID">📋</button></p>
-            </div>
-          </div>
-          
-          <div class="progress-bar-container">
-            <div id="progress-bar" class="progress-bar indeterminate"></div>
-          </div>
-          <p id="processing-msg" class="processing-msg">Submitting job to backend executor...</p>
-
-          <div class="curl-box">
-            <div class="curl-header">
-              <span>Terminal Polling Command:</span>
-              <button id="btn-copy-curl" class="btn btn-xs btn-ghost">Copy</button>
-            </div>
-            <code id="curl-code">curl http://localhost:8000/jobs/...</code>
+            <p class="help">Direct link to an MP3, WAV, MP4 or M4A file.</p>
           </div>
         </div>
 
-        <!-- Batch Upload Mode -->
-        <div id="tab-content-batch" class="tab-content">
-          <div class="form-group">
-            <label>Learner ID</label>
-            <input type="text" id="batch-learner-id" placeholder="e.g. learner_001">
-          </div>
-          <div class="form-group">
-            <label>Tutor ID</label>
-            <input type="text" id="batch-tutor-id" placeholder="e.g. tutor_001">
-          </div>
-          <div class="form-group">
-            <label>Session URLs <small class="help-text">(one per line)</small></label>
-            <textarea id="batch-urls" rows="6" placeholder="https://example.com/session1.mp4&#10;https://example.com/session2.mp4&#10;..." style="width:100%;padding:0.65rem;background:var(--bg-input);border:1px solid var(--border-color);border-radius:8px;color:var(--text-main);font-family:inherit;font-size:0.85rem;resize:vertical;outline:none;"></textarea>
-            <small class="help-text">Max 20 URLs. Processed 2 at a time automatically.</small>
-          </div>
-          <button id="btn-batch-submit" class="btn btn-primary btn-block" style="margin-top:0.5rem">
-            🚀 Queue All Sessions
-          </button>
-          <!-- Batch Progress -->
-          <div id="batch-progress-area" class="hidden" style="margin-top:1rem">
-            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.5rem">
-              <span style="font-size:0.85rem;font-weight:600;">Batch Progress</span>
-              <span id="batch-summary" style="font-size:0.8rem;color:var(--text-muted)"></span>
+        <!-- Upload -->
+        <div id="panel-file" role="tabpanel" aria-labelledby="tab-file" class="tab-panel hidden">
+          <div class="field">
+            <span class="label" id="file-label">Audio or video file</span>
+            <div id="dropzone" class="dropzone" tabindex="0" role="button" aria-labelledby="file-label" aria-describedby="dropzone-help">
+              <input type="file" id="file-input" accept="audio/*,video/*" hidden>
+              <span class="dropzone-icon"><svg class="icon icon-lg" aria-hidden="true"><use href="icons.svg#i-upload"/></svg></span>
+              <p class="dropzone-title">Drop a file here or <span>browse</span></p>
+              <p id="dropzone-help" class="help">MP3, WAV, M4A, FLAC or MP4 · up to 150 MB</p>
             </div>
-            <div id="batch-jobs-list" style="display:flex;flex-direction:column;gap:0.4rem;"></div>
+            <div id="file-preview" class="file-preview hidden">
+              <div class="file-info">
+                <svg class="icon" aria-hidden="true"><use href="icons.svg#i-file"/></svg>
+                <div class="file-details">
+                  <span id="file-name" class="file-name"></span>
+                  <span id="file-size" class="help"></span>
+                </div>
+                <button type="button" id="btn-remove-file" class="btn-icon" aria-label="Remove file">
+                  <svg class="icon" aria-hidden="true"><use href="icons.svg#i-x"/></svg>
+                </button>
+              </div>
+              <audio id="audio-player" controls class="audio-player"></audio>
+            </div>
           </div>
         </div>
 
-        <!-- Error State -->
-        <div id="state-error" class="error-card hidden">
-          <div class="error-header">
-            <span class="error-icon">⚠️</span>
-            <h3>Transcription Failed</h3>
-          </div>
-          <p id="error-message-text" class="error-msg">An unexpected error occurred.</p>
-          <details class="traceback-details">
-            <summary>View Technical Traceback</summary>
-            <pre id="error-traceback"></pre>
-          </details>
-          <button id="btn-retry" class="btn btn-secondary btn-sm mt-3">🔄 Try Again</button>
-        </div>
-
-        <!-- Results State -->
-        <div id="state-results" class="results-container hidden">
-          <!-- Summary Metrics Cards -->
-          <div class="metrics-grid">
-            <div class="metric-card">
-              <span class="metric-icon">⏱️</span>
-              <div>
-                <span class="metric-label">Duration</span>
-                <span id="metric-duration" class="metric-value">0m 0s</span>
-              </div>
-            </div>
-            <div class="metric-card">
-              <span class="metric-icon">👥</span>
-              <div>
-                <span class="metric-label">Speakers</span>
-                <span id="metric-speakers" class="metric-value">0</span>
-              </div>
-            </div>
-            <div class="metric-card">
-              <span class="metric-icon">💬</span>
-              <div>
-                <span class="metric-label">Segments</span>
-                <span id="metric-segments" class="metric-value">0</span>
-              </div>
-            </div>
-            <div class="metric-card">
-              <span class="metric-icon">🌐</span>
-              <div>
-                <span class="metric-label">Language</span>
-                <span id="metric-language" class="metric-value">Auto</span>
-              </div>
-            </div>
-          </div>
-
-          <!-- Controls Bar -->
-          <div class="results-controls">
-            <!-- Speaker Filter Chips -->
-            <div id="speaker-chips" class="speaker-chips">
-              <button class="chip active" data-speaker="ALL">All Speakers</button>
-            </div>
-
-            <!-- Search Bar -->
-            <div class="search-box">
-              <span class="search-icon">🔍</span>
-              <input type="text" id="search-transcript" placeholder="Search in transcript...">
-              <button id="btn-clear-search" class="btn-icon hidden">✕</button>
-            </div>
-          </div>
-
-          <!-- Action Bar: Copy & Export -->
-          <div class="action-bar">
-            <div class="segment-counter"><span id="visible-count">0</span> segments shown</div>
-            <div class="export-buttons">
-              <button id="btn-copy-text" class="btn btn-sm btn-secondary">📋 Copy Text</button>
-              <button id="btn-export-txt" class="btn btn-sm btn-secondary">📄 Export .TXT</button>
-              <button id="btn-export-srt" class="btn btn-sm btn-secondary">🎬 Export .SRT</button>
-              <button id="btn-export-json" class="btn btn-sm btn-secondary">💾 Export .JSON</button>
-            </div>
-          </div>
-
-          <!-- Transcript Thread View -->
-          <div id="transcript-container" class="transcript-thread">
-            <!-- Dynamic segments render here -->
+        <!-- Batch -->
+        <div id="panel-batch" role="tabpanel" aria-labelledby="tab-batch" class="tab-panel hidden">
+          <div class="field">
+            <label class="label" for="batch-urls">Session recordings</label>
+            <textarea id="batch-urls" class="textarea" rows="6" spellcheck="false"
+              placeholder="https://…/2026/Sep/21/session.mp4&#10;https://…/session-2.mp4, 2026-09-24"></textarea>
+            <p class="help">One URL per line, up to 20. Dates are read from the URL (…/2026/Sep/21/…); otherwise add one after a comma: <code>url, 2026-09-24</code>. Processed two at a time.</p>
           </div>
         </div>
-      </section>
-    </main>
-  </div>
 
-  <!-- History Modal / Drawer -->
-  <div id="history-modal" class="modal-backdrop hidden">
-    <div class="modal-card">
+        <!-- Learner -->
+        <fieldset class="kg-box">
+          <legend>Learner progress</legend>
+          <div class="field-row">
+            <div class="field">
+              <label class="label" for="input-learner-id">Learner ID <span class="optional" data-optional>(optional)</span></label>
+              <input id="input-learner-id" class="input" placeholder="learner_001" autocomplete="off">
+            </div>
+            <div class="field">
+              <label class="label" for="input-tutor-id">Tutor ID <span class="optional" data-optional>(optional)</span></label>
+              <input id="input-tutor-id" class="input" placeholder="tutor_001" autocomplete="off">
+            </div>
+          </div>
+          <div class="field" id="session-date-field">
+            <label class="label" for="input-session-date">Session date <span class="optional">(optional)</span></label>
+            <input type="date" id="input-session-date" class="input">
+          </div>
+          <p class="help" id="kg-help">Add both IDs to analyse the session and update the learner's progress report.</p>
+        </fieldset>
+
+        <!-- Settings -->
+        <details class="options">
+          <summary>
+            <svg class="icon" aria-hidden="true"><use href="icons.svg#i-sliders"/></svg>
+            Transcription settings
+            <svg class="icon chev" aria-hidden="true"><use href="icons.svg#i-chevron-down"/></svg>
+          </summary>
+          <div class="options-body">
+            <div class="field-row">
+              <div class="field">
+                <label class="label" for="num-speakers">Speakers</label>
+                <input type="number" id="num-speakers" class="input" min="1" max="50" placeholder="Auto" disabled>
+                <label class="checkbox"><input type="checkbox" id="auto-speakers" checked> Detect automatically</label>
+              </div>
+              <div class="field">
+                <label class="label" for="select-language">Language</label>
+                <select id="select-language" class="select">
+                  <option value="">Detect automatically</option>
+                  <option value="en">English</option>
+                  <option value="hi">Hindi</option>
+                  <option value="mr">Marathi</option>
+                  <option value="es">Spanish</option>
+                  <option value="fr">French</option>
+                  <option value="de">German</option>
+                  <option value="pt">Portuguese</option>
+                </select>
+              </div>
+            </div>
+            <div class="field">
+              <label class="label" for="range-preprocess">Audio clean-up <span id="preprocess-val" class="badge badge-primary">Off</span></label>
+              <input type="range" id="range-preprocess" class="range" min="0" max="4" value="0" step="1" aria-describedby="preprocess-help">
+              <p id="preprocess-help" class="help">Higher levels reduce noise but can make speaker separation harder.</p>
+            </div>
+            <div class="field">
+              <label class="label" for="input-prompt">Names &amp; terms <span class="optional">(optional)</span></label>
+              <input type="text" id="input-prompt" class="input" placeholder="e.g. Kiran, Varsha, EnglishYaari">
+              <p class="help">Helps the transcript spell names and domain terms correctly.</p>
+            </div>
+            <label class="checkbox"><input type="checkbox" id="check-translate"> Translate non-English speech to English</label>
+          </div>
+        </details>
+
+        <div id="form-error" class="form-error hidden" role="alert"></div>
+
+        <button type="submit" id="btn-submit" class="btn btn-primary btn-block">
+          <span id="btn-submit-label">Start analysis</span>
+          <svg class="icon" aria-hidden="true"><use href="icons.svg#i-arrow-right"/></svg>
+        </button>
+      </form>
+    </section>
+
+    <!-- ── Output panel ────────────────────────────────────────────────── -->
+    <section class="card panel-results" aria-live="polite" aria-label="Results">
+
+      <!-- Idle -->
+      <div id="state-idle" class="empty">
+        <span class="empty-icon"><svg class="icon icon-lg" aria-hidden="true"><use href="icons.svg#i-mic"/></svg></span>
+        <h3>Ready when you are</h3>
+        <p>Add a recording on the left. You'll see the transcript here, and the learner's progress report updates automatically.</p>
+      </div>
+
+      <!-- Single job in progress -->
+      <div id="state-processing" class="state hidden">
+        <div class="state-head">
+          <div class="spinner" aria-hidden="true"></div>
+          <div>
+            <h2 class="state-title" id="processing-title">Working on it</h2>
+            <p class="help">Job <code id="active-job-id">…</code>
+              <button id="btn-copy-job-id" class="btn-icon" type="button" aria-label="Copy job ID">
+                <svg class="icon icon-sm" aria-hidden="true"><use href="icons.svg#i-copy"/></svg>
+              </button>
+              · <span id="elapsed-timer" class="mono">00:00</span>
+            </p>
+          </div>
+        </div>
+        <ol class="steps" id="job-steps">
+          <li data-step="transcribe"><span class="step-dot"></span><div><strong>Transcribe &amp; separate speakers</strong><span class="help" data-step-msg>Waiting for a free worker…</span></div></li>
+          <li data-step="analyse"><span class="step-dot"></span><div><strong>Analyse for progress report</strong><span class="help" data-step-msg>Starts after transcription</span></div></li>
+        </ol>
+        <p class="help">You can leave this page open in the background — it checks for updates automatically.</p>
+      </div>
+
+      <!-- Error -->
+      <div id="state-error" class="state hidden">
+        <div class="alert alert-danger">
+          <svg class="icon" aria-hidden="true"><use href="icons.svg#i-alert"/></svg>
+          <div>
+            <strong>Something went wrong</strong>
+            <p id="error-message-text"></p>
+          </div>
+        </div>
+        <button id="btn-retry" class="btn btn-secondary btn-sm" type="button">Start over</button>
+      </div>
+
+      <!-- Batch progress -->
+      <div id="state-batch" class="state hidden">
+        <div class="state-head between">
+          <div>
+            <h2 class="state-title">Batch for <span id="batch-learner"></span></h2>
+            <p class="help" id="batch-summary"></p>
+          </div>
+          <span id="batch-badge" class="badge badge-primary">Running</span>
+        </div>
+        <div class="progress" role="progressbar" aria-labelledby="batch-summary" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="batch-progressbar">
+          <div class="progress-fill" id="batch-progress-fill"></div>
+        </div>
+        <ul id="batch-jobs-list" class="job-list"></ul>
+        <div id="batch-footer" class="batch-footer hidden">
+          <a id="batch-report-link" class="btn btn-primary" href="/dashboard.html">
+            Open progress report <svg class="icon" aria-hidden="true"><use href="icons.svg#i-arrow-right"/></svg>
+          </a>
+          <button id="btn-batch-dismiss" class="btn btn-ghost" type="button">Start another</button>
+        </div>
+      </div>
+
+      <!-- Results -->
+      <div id="state-results" class="state hidden">
+        <div id="kg-banner" class="alert hidden"></div>
+
+        <div class="stat-row">
+          <div class="stat"><span class="stat-label">Duration</span><span id="metric-duration" class="stat-value">–</span></div>
+          <div class="stat"><span class="stat-label">Speakers</span><span id="metric-speakers" class="stat-value">–</span></div>
+          <div class="stat"><span class="stat-label">Segments</span><span id="metric-segments" class="stat-value">–</span></div>
+          <div class="stat"><span class="stat-label">Language</span><span id="metric-language" class="stat-value">–</span></div>
+        </div>
+
+        <div class="results-toolbar">
+          <div id="speaker-chips" class="chips" role="group" aria-label="Filter by speaker"></div>
+          <div class="search">
+            <svg class="icon" aria-hidden="true"><use href="icons.svg#i-search"/></svg>
+            <label for="search-transcript" class="visually-hidden">Search transcript</label>
+            <input type="search" id="search-transcript" class="input" placeholder="Search transcript">
+          </div>
+        </div>
+
+        <div class="results-actions">
+          <span class="help"><span id="visible-count">0</span> segments</span>
+          <div class="export-buttons">
+            <button id="btn-copy-text" class="btn btn-secondary btn-sm" type="button"><svg class="icon icon-sm" aria-hidden="true"><use href="icons.svg#i-copy"/></svg>Copy</button>
+            <button id="btn-export-txt" class="btn btn-secondary btn-sm" type="button"><svg class="icon icon-sm" aria-hidden="true"><use href="icons.svg#i-download"/></svg>TXT</button>
+            <button id="btn-export-srt" class="btn btn-secondary btn-sm" type="button"><svg class="icon icon-sm" aria-hidden="true"><use href="icons.svg#i-download"/></svg>SRT</button>
+            <button id="btn-export-json" class="btn btn-secondary btn-sm" type="button"><svg class="icon icon-sm" aria-hidden="true"><use href="icons.svg#i-download"/></svg>JSON</button>
+          </div>
+        </div>
+
+        <ol id="transcript-container" class="transcript"></ol>
+      </div>
+    </section>
+  </main>
+
+  <!-- History dialog -->
+  <div id="history-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="history-title">
+    <div class="modal-card card">
       <div class="modal-header">
-        <h3>📜 Transcription History</h3>
-        <button id="btn-close-history" class="btn-icon">✕</button>
+        <h2 id="history-title" class="card-title">Recent jobs</h2>
+        <button id="btn-close-history" class="btn-icon" type="button" aria-label="Close">
+          <svg class="icon" aria-hidden="true"><use href="icons.svg#i-x"/></svg>
+        </button>
       </div>
-      <div class="modal-body">
-        <div id="history-list" class="history-list">
-          <p class="empty-history">No past jobs recorded yet.</p>
-        </div>
-      </div>
+      <ul id="history-list" class="history-list"></ul>
       <div class="modal-footer">
-        <button id="btn-clear-history" class="btn btn-sm btn-ghost text-danger">Clear History</button>
+        <p class="help">Jobs are kept on the server for 6 hours.</p>
+        <button id="btn-clear-history" class="btn btn-ghost btn-sm" type="button">Clear history</button>
       </div>
     </div>
   </div>
 
+  <script src="common.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

@@ -13,26 +13,61 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import asdict, dataclass
-from typing import List, Optional
+from typing import List
 
 from knowledge_graph.ingest.parser import ParsedTranscript, Turn
 
 logger = logging.getLogger(__name__)
 
-# ── Hindi word list (curated subset) ──────────────────────────────────────────
-# Extend as needed; covers common Hinglish code-switching words.
+# ── Hindi word lists (romanised, curated) ─────────────────────────────────────
+# Unambiguous: these are not English words, so they always count as Hindi.
 _HINDI_WORDS: frozenset[str] = frozenset({
-    "aur", "hai", "hain", "tha", "thi", "the", "mein", "main", "ka", "ki",
-    "ke", "ko", "se", "par", "pe", "yeh", "woh", "kya", "kaise", "kyun",
-    "kyunki", "lekin", "toh", "bhi", "nahi", "nahin", "haan", "naa", "na",
-    "bahut", "accha", "theek", "sahi", "matlab", "matlab", "samajh", "bol",
-    "kar", "karo", "karta", "karti", "karte", "phir", "abhi", "pehle",
-    "baad", "sirf", "bas", "ek", "do", "teen", "char", "paanch", "ab",
-    "jab", "tab", "kab", "yahan", "wahan", "itna", "kitna",
+    "aur", "hai", "hain", "tha", "thi", "mein", "ka", "ki", "ke", "ko",
+    "yeh", "ye", "woh", "wo", "kya", "kaise", "kyun", "kyunki", "lekin",
+    "toh", "bhi", "nahi", "nahin", "haan", "naa", "bahut", "accha", "acha",
+    "achha", "theek", "thik", "sahi", "matlab", "samajh", "samjha", "samjhe",
+    "kar", "karo", "karna", "karta", "karti", "karte", "kiya", "phir", "abhi",
+    "pehle", "baad", "sirf", "ek", "teen", "paanch", "kab", "yahan", "wahan",
+    "itna", "kitna", "hoon", "hun", "hu", "raha", "rahi", "rahe", "gaya",
+    "gayi", "gaye", "wala", "wali", "wale", "bolta", "bolti", "bolte", "bol",
+    "kuch", "sab", "sabhi", "apna", "apni", "apne", "mera", "meri", "mere",
+    "tera", "teri", "tumhara", "aap", "aapka", "aapki", "hum", "humko",
+    "mujhe", "tujhe", "unko", "usko", "isko", "yaar", "arre", "thoda",
+    "zyada", "jaldi", "chalo", "dekho", "suno", "pata", "chahiye", "sakta",
+    "sakti", "sakte", "hota", "hoti", "hote", "jaise", "waise", "kaun",
+    "kahan", "kitne", "unka", "uska", "iska", "humara", "hamara", "se",
+})
+
+# Ambiguous: valid Hindi *and* common English ("the", "main", "do", "par" …).
+# Counted as Hindi only when next to an unambiguous Hindi word, so
+# "the main point" stays English while "main bolta hoon" is Hindi.
+_AMBIGUOUS_WORDS: frozenset[str] = frozenset({
+    "the", "main", "do", "par", "pe", "na", "tab", "jab", "ab", "bas", "char",
 })
 
 # Devanagari Unicode block
-_DEVANAGARI_RE = re.compile(r"[\u0900-\u097F]")
+_DEVANAGARI_RE = re.compile(r"[ऀ-ॿ]")
+_TOKEN_CLEAN_RE = re.compile(r"[^\wऀ-ॿ]")
+
+
+def _clean_token(tok: str) -> str:
+    return _TOKEN_CLEAN_RE.sub("", tok).lower()
+
+
+def hindi_token_flags(tokens: List[str]) -> List[bool]:
+    """Return one flag per token: True if the token is Hindi/Hinglish."""
+    cleaned = [_clean_token(t) for t in tokens]
+    certain = [
+        bool(c) and (bool(_DEVANAGARI_RE.search(c)) or c in _HINDI_WORDS)
+        for c in cleaned
+    ]
+    flags = list(certain)
+    for i, c in enumerate(cleaned):
+        if c in _AMBIGUOUS_WORDS:
+            prev_hindi = i > 0 and certain[i - 1]
+            next_hindi = i + 1 < len(cleaned) and certain[i + 1]
+            flags[i] = prev_hindi or next_hindi
+    return flags
 
 
 @dataclass
@@ -68,24 +103,25 @@ def compute_session_metrics(transcript: ParsedTranscript) -> SessionMetrics:
     word_counts = []
     english_sentence_lengths = []
     total_learner_words = 0
-    
+
     for t in learner_turns:
         if t.word_count > 0:
             word_counts.append(t.word_count)
             total_learner_words += t.word_count
-            
+
             sentences = re.split(r'[.!?]+', t.text)
             for s in sentences:
                 tokens = s.strip().split()
-                if not tokens: continue
-                eng_count = 0
-                for tok in tokens:
-                    clean = re.sub(r"[^\w\u0900-\u097F]", "", tok).lower()
-                    if clean and not _DEVANAGARI_RE.search(clean) and clean not in _HINDI_WORDS:
-                        eng_count += 1
+                if not tokens:
+                    continue
+                flags = hindi_token_flags(tokens)
+                eng_count = sum(
+                    1 for tok, is_hindi in zip(tokens, flags)
+                    if _clean_token(tok) and not is_hindi
+                )
                 if eng_count > 0:
                     english_sentence_lengths.append(eng_count)
-                    
+
     words_per_turn = (
         sum(word_counts) / len(word_counts) if word_counts else 0.0
     )
@@ -123,16 +159,6 @@ def _compute_code_switch_ratio(learner_text: str, total_words: int) -> float:
     if not learner_text or total_words == 0:
         return 0.0
 
-    tokens = learner_text.lower().split()
-    hindi_count = 0
-    for tok in tokens:
-        # Strip punctuation from token edges
-        clean = re.sub(r"[^\w\u0900-\u097F]", "", tok)
-        if not clean:
-            continue
-        if _DEVANAGARI_RE.search(clean):
-            hindi_count += 1
-        elif clean in _HINDI_WORDS:
-            hindi_count += 1
-
+    tokens = learner_text.split()
+    hindi_count = sum(hindi_token_flags(tokens))
     return hindi_count / total_words

@@ -23,6 +23,10 @@ CONSTRAINTS: list[str] = [
     "CREATE CONSTRAINT grammar_id  IF NOT EXISTS FOR (gp:GrammarPattern) REQUIRE gp.id IS UNIQUE",
     "CREATE CONSTRAINT word_lemma  IF NOT EXISTS FOR (w:Word)            REQUIRE w.lemma IS UNIQUE",
     "CREATE CONSTRAINT skill_name  IF NOT EXISTS FOR (sk:Skill)          REQUIRE sk.name IS UNIQUE",
+    # Relationship property indexes — per-session lookups and re-ingest cleanup
+    "CREATE INDEX made_error_session IF NOT EXISTS FOR ()-[r:MADE_ERROR]-() ON (r.session_id)",
+    "CREATE INDEX used_word_session  IF NOT EXISTS FOR ()-[r:USED_WORD]-()  ON (r.session_id)",
+    "CREATE INDEX session_date       IF NOT EXISTS FOR (s:Session) ON (s.date)",
 ]
 
 # ── Vector indexes (Neo4j 5.x) ─────────────────────────────────────────────────

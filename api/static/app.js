@@ -1,789 +1,663 @@
 /**
- * Whisper Diarization Studio — Client JS Application
+ * Session Studio — client app.
+ *
+ * Polling rules (one loop per job / batch, never per render):
+ *   • chained setTimeout with backoff (resets when status changes)
+ *   • paused while the tab is hidden, resumes immediately when visible
+ *   • stops on completion, on 404, or after repeated network failures
+ *   • status polls are lightweight (?include_result=false); the full
+ *     transcript is fetched exactly once when transcription finishes
  */
+(() => {
+  'use strict';
 
-document.addEventListener('DOMContentLoaded', () => {
-  // ── Elements Reference ──────────────────────────────────────────────────
-  const healthBadge = document.getElementById('health-badge');
-  const healthText = document.getElementById('health-text');
-  
-  // Tabs & Form
-  const tabBtns = document.querySelectorAll('.tab-btn');
-  const tabContents = document.querySelectorAll('.tab-content');
-  const transcribeForm = document.getElementById('transcribe-form');
-  const inputUrl = document.getElementById('input-url');
-  const btnSampleUrl = document.getElementById('btn-sample-url');
-  
-  // File Dropzone
-  const dropzone = document.getElementById('dropzone');
-  const fileInput = document.getElementById('file-input');
-  const filePreview = document.getElementById('file-preview');
-  const fileName = document.getElementById('file-name');
-  const fileSize = document.getElementById('file-size');
-  const audioPlayer = document.getElementById('audio-player');
-  const btnRemoveFile = document.getElementById('btn-remove-file');
+  const { $, el, icon, api, storage, session, toast, copy, fmt } = window.EY;
 
-  // Options
-  const autoSpeakersCheck = document.getElementById('auto-speakers');
-  const numSpeakersInput = document.getElementById('num-speakers');
-  const selectLanguage = document.getElementById('select-language');
-  const checkTranslate = document.getElementById('check-translate');
-  const rangePreprocess = document.getElementById('range-preprocess');
-  const preprocessVal = document.getElementById('preprocess-val');
-  const inputPrompt = document.getElementById('input-prompt');
-  const inputLearnerId = document.getElementById('input-learner-id');
-  const inputTutorId = document.getElementById('input-tutor-id');
-  const btnSubmit = document.getElementById('btn-submit');
+  /**
+   * Poller: calls `fn` repeatedly. `fn` returns {stop: bool, changed: bool}.
+   * Delay grows by `factor` while nothing changes, resets when it does.
+   */
+  function createPoller(fn, { minDelay = 2000, maxDelay = 15000, factor = 1.5, maxFailures = 5, onFail } = {}) {
+    let timer = null;
+    let delay = minDelay;
+    let running = false;
+    let inflight = false;
+    let failures = 0;
 
-  // States & Panels
-  const stateIdle = document.getElementById('state-idle');
-  const stateProcessing = document.getElementById('state-processing');
-  const stateError = document.getElementById('state-error');
-  const stateResults = document.getElementById('state-results');
-
-  // Processing elements
-  const jobStatusBadge = document.getElementById('job-status-badge');
-  const activeJobId = document.getElementById('active-job-id');
-  const btnCopyJobId = document.getElementById('btn-copy-job-id');
-  const elapsedTimer = document.getElementById('elapsed-timer');
-  const processingMsg = document.getElementById('processing-msg');
-  const curlCode = document.getElementById('curl-code');
-  const btnCopyCurl = document.getElementById('btn-copy-curl');
-
-  // Error elements
-  const errorMessageText = document.getElementById('error-message-text');
-  const errorTraceback = document.getElementById('error-traceback');
-  const btnRetry = document.getElementById('btn-retry');
-
-  // Metrics & Results
-  const metricDuration = document.getElementById('metric-duration');
-  const metricSpeakers = document.getElementById('metric-speakers');
-  const metricSegments = document.getElementById('metric-segments');
-  const metricLanguage = document.getElementById('metric-language');
-  const speakerChips = document.getElementById('speaker-chips');
-  const searchTranscript = document.getElementById('search-transcript');
-  const btnClearSearch = document.getElementById('btn-clear-search');
-  const visibleCount = document.getElementById('visible-count');
-  const transcriptContainer = document.getElementById('transcript-container');
-
-  // Export buttons
-  const btnCopyText = document.getElementById('btn-copy-text');
-  const btnExportTxt = document.getElementById('btn-export-txt');
-  const btnExportSrt = document.getElementById('btn-export-srt');
-  const btnExportJson = document.getElementById('btn-export-json');
-
-  // History Modal
-  const btnHistory = document.getElementById('btn-history');
-  const historyCount = document.getElementById('history-count');
-  const historyModal = document.getElementById('history-modal');
-  const btnCloseHistory = document.getElementById('btn-close-history');
-  const historyList = document.getElementById('history-list');
-  const btnClearHistory = document.getElementById('btn-clear-history');
-
-  // ── State Variables ─────────────────────────────────────────────────────
-  let activeTab = 'url'; // 'url' or 'file'
-  let loadedFileBase64 = null;
-  let activeJobIdVal = null;
-  let pollInterval = null;
-  let timerInterval = null;
-  let startTime = null;
-  let currentResultData = null;
-  let activeSpeakerFilter = 'ALL';
-
-  // Sample Audio URL for quick testing
-  const SAMPLE_AUDIO_URL = 'https://d5cn6xo304j6a.cloudfront.net/Session-Recordings/2026/Sep/21/6aade741b42d9b6472aac626/directory1/directory2/93ae7c24bf441383d167cab71c583612_oURY2NvN_0.mp4';
-
-  // Preprocess slider descriptions
-  const PREPROCESS_LABELS = [
-    '0 - Off',
-    '1 - Sanitize Audio',
-    '2 - High/Low Pass Filter',
-    '3 - Spectral Denoise',
-    '4 - RMS Normalization'
-  ];
-
-  // ── Init App ────────────────────────────────────────────────────────────
-  checkHealth();
-  setInterval(checkHealth, 10000);
-  updateHistoryBadge();
-  initBatch();
-
-  // ── Batch Session Queue ──────────────────────────────────────────────────
-  function initBatch() {
-    const btnBatchSubmit = document.getElementById('btn-batch-submit');
-    const batchProgressArea = document.getElementById('batch-progress-area');
-    const batchSummary = document.getElementById('batch-summary');
-    const batchJobsList = document.getElementById('batch-jobs-list');
-
-    let batchPollInterval = null;
-
-    btnBatchSubmit.addEventListener('click', async () => {
-      const learnerId = document.getElementById('batch-learner-id').value.trim();
-      const tutorId   = document.getElementById('batch-tutor-id').value.trim();
-      const urlsRaw   = document.getElementById('batch-urls').value.trim();
-
-      if (!learnerId || !tutorId) {
-        alert('Please enter both Learner ID and Tutor ID for batch processing.');
-        return;
-      }
-      const urls = urlsRaw.split('\n').map(u => u.trim()).filter(u => u.length > 0);
-      if (urls.length === 0) {
-        alert('Please enter at least one URL.');
-        return;
-      }
-      if (urls.length > 20) {
-        alert('Maximum 20 URLs per batch.');
-        return;
-      }
-
-      btnBatchSubmit.disabled = true;
-      btnBatchSubmit.textContent = 'Queueing...';
-
+    async function tick() {
+      timer = null;
+      if (!running || inflight) return;
+      if (document.hidden) return; // resumed by visibilitychange
+      inflight = true;
       try {
-        const res = await fetch('/transcribe/batch', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ file_urls: urls, learner_id: learnerId, tutor_id: tutorId })
-        });
-
-        if (!res.ok) {
-          const err = await res.json();
-          throw new Error(err.detail || 'Batch submit failed.');
-        }
-
-        const batch = await res.json();
-        batchProgressArea.classList.remove('hidden');
-        renderBatchJobs(batch, batchJobsList);
-        updateBatchSummary(batch, batchSummary);
-
-        // Poll batch status
-        if (batchPollInterval) clearInterval(batchPollInterval);
-        batchPollInterval = setInterval(async () => {
-          const r = await fetch(`/batches/${batch.batch_id}`);
-          const updated = await r.json();
-          renderBatchJobs(updated, batchJobsList);
-          updateBatchSummary(updated, batchSummary);
-
-          if (updated.queued === 0 && updated.processing === 0) {
-            clearInterval(batchPollInterval);
-            btnBatchSubmit.disabled = false;
-            btnBatchSubmit.textContent = '🚀 Queue All Sessions';
-            showToast(`Batch complete! ${updated.done} done, ${updated.error} errors.`);
-          }
-        }, 2000);
-
+        const { stop, changed } = await fn();
+        failures = 0;
+        if (stop) { running = false; return; }
+        delay = changed ? minDelay : Math.min(maxDelay, delay * factor);
       } catch (err) {
-        alert(err.message);
-        btnBatchSubmit.disabled = false;
-        btnBatchSubmit.textContent = '🚀 Queue All Sessions';
-      }
-    });
-  }
-
-  function renderBatchJobs(batch, container) {
-    container.innerHTML = '';
-    batch.job_ids.forEach((jid, idx) => {
-      const statusColors = { queued: '#f59e0b', processing: '#6366f1', done: '#10b981', error: '#ef4444' };
-      // Look up each job's status from per-job endpoint (cached in batch counts for now)
-      const jobEl = document.createElement('div');
-      jobEl.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:0.5rem 0.75rem;background:rgba(255,255,255,0.04);border-radius:6px;font-size:0.8rem;';
-      jobEl.innerHTML = `
-        <span style="font-family:monospace;color:#94a3b8;">Session ${idx + 1}</span>
-        <a href="#" onclick="navigator.clipboard.writeText('${jid}');return false;" style="color:#6366f1;font-family:monospace;font-size:0.72rem;">${jid.slice(0, 8)}…</a>
-        <span id="job-status-${jid}" style="padding:2px 8px;border-radius:10px;background:rgba(245,158,11,0.2);color:#f59e0b;font-weight:600;">QUEUED</span>
-      `;
-      container.appendChild(jobEl);
-
-      // Poll individual job status
-      (async () => {
-        let done = false;
-        while (!done) {
-          await new Promise(r => setTimeout(r, 2500));
-          try {
-            const r = await fetch(`/jobs/${jid}`);
-            const j = await r.json();
-            const el = document.getElementById(`job-status-${jid}`);
-            if (el) {
-              const colors = { queued: '#f59e0b', processing: '#818cf8', done: '#34d399', error: '#f87171' };
-              const bgs = { queued: 'rgba(245,158,11,0.2)', processing: 'rgba(99,102,241,0.2)', done: 'rgba(16,185,129,0.2)', error: 'rgba(239,68,68,0.2)' };
-              el.textContent = j.status.toUpperCase();
-              el.style.color = colors[j.status] || '#94a3b8';
-              el.style.background = bgs[j.status] || 'transparent';
-            }
-            if (j.status === 'done' || j.status === 'error') done = true;
-          } catch(e) { done = true; }
+        failures += 1;
+        if (err.status === 404 || failures >= maxFailures) {
+          running = false;
+          if (onFail) onFail(err);
+          return;
         }
-      })();
-    });
-  }
-
-  function updateBatchSummary(batch, el) {
-    el.textContent = `${batch.done} done · ${batch.processing} processing · ${batch.queued} queued · ${batch.error} errors`;
-  }
-
-  // ── Health Check ────────────────────────────────────────────────────────
-  async function checkHealth() {
-    try {
-      const res = await fetch('/health');
-      if (res.ok) {
-        healthBadge.className = 'badge status-online';
-        healthText.textContent = 'API Online';
-      } else {
-        throw new Error('Health status error');
+        delay = Math.min(maxDelay, delay * 2);
+      } finally {
+        inflight = false;
       }
-    } catch (e) {
-      healthBadge.className = 'badge status-checking';
-      healthText.textContent = 'Offline / Connecting';
+      if (running) timer = setTimeout(tick, delay);
+    }
+
+    function onVisibility() {
+      if (!document.hidden && running && !inflight) {
+        clearTimeout(timer);
+        tick();
+      }
+    }
+    document.addEventListener('visibilitychange', onVisibility);
+
+    return {
+      start({ immediate = false } = {}) {
+        running = true; delay = minDelay; failures = 0;
+        clearTimeout(timer);
+        timer = setTimeout(tick, immediate ? 0 : minDelay);
+      },
+      stop() { running = false; clearTimeout(timer); timer = null; },
+      get running() { return running; },
+    };
+  }
+
+  const reportUrl = (learnerId) => `/dashboard.html?learner=${encodeURIComponent(learnerId)}`;
+
+  // ── Elements ────────────────────────────────────────────────────────────
+  const form = $('transcribe-form');
+  const tabs = Array.from(document.querySelectorAll('[role="tab"]'));
+  const inputUrl = $('input-url');
+  const inputLearner = $('input-learner-id');
+  const inputTutor = $('input-tutor-id');
+  const inputDate = $('input-session-date');
+  const batchUrls = $('batch-urls');
+  const autoSpeakers = $('auto-speakers');
+  const numSpeakers = $('num-speakers');
+  const rangePreprocess = $('range-preprocess');
+  const formError = $('form-error');
+  const btnSubmit = $('btn-submit');
+
+  const SAMPLE_AUDIO_URL = 'https://d5cn6xo304j6a.cloudfront.net/Session-Recordings/2026/Sep/21/6aade741b42d9b6472aac626/directory1/directory2/93ae7c24bf441383d167cab71c583612_oURY2NvN_0.mp4';
+  const PREPROCESS_LABELS = ['Off', 'Sanitize', 'Filter', 'Denoise', 'Normalize'];
+  const STATES = ['state-idle', 'state-processing', 'state-error', 'state-batch', 'state-results'];
+
+  let activeTab = 'url';
+  let loadedFileBase64 = null;
+  let currentResult = null;
+  let currentJobId = null;
+  let speakerFilter = 'ALL';
+
+  function showState(id) {
+    STATES.forEach((s) => $(s).classList.toggle('hidden', s !== id));
+  }
+
+  function showFormError(msg) {
+    formError.textContent = msg;
+    formError.classList.toggle('hidden', !msg);
+  }
+
+  // ── Health (every 30 s, skipped while hidden) ───────────────────────────
+  async function checkHealth() {
+    if (document.hidden) return;
+    const badge = $('health-badge');
+    try {
+      const h = await api('/health');
+      badge.className = 'badge is-online';
+      $('health-text').textContent = h.pipeline_loaded === false ? 'Loading models' : 'Online';
+    } catch (_) {
+      badge.className = 'badge is-offline';
+      $('health-text').textContent = 'Offline';
     }
   }
+  checkHealth();
+  setInterval(checkHealth, 30000);
+  document.addEventListener('visibilitychange', checkHealth);
 
-  // ── Tab Switching ───────────────────────────────────────────────────────
-  tabBtns.forEach(btn => {
-    btn.addEventListener('click', () => {
-      tabBtns.forEach(b => b.classList.remove('active'));
-      tabContents.forEach(c => c.classList.remove('active'));
-      
-      btn.classList.add('active');
-      activeTab = btn.getAttribute('data-tab');
-      document.getElementById(`tab-content-${activeTab}`).classList.add('active');
+  // ── Tabs ────────────────────────────────────────────────────────────────
+  function selectTab(name) {
+    activeTab = name;
+    tabs.forEach((t) => {
+      const on = t.dataset.tab === name;
+      t.setAttribute('aria-selected', String(on));
+      t.tabIndex = on ? 0 : -1;
+      $(`panel-${t.dataset.tab}`).classList.toggle('hidden', !on);
+    });
+    const batch = name === 'batch';
+    document.querySelectorAll('[data-optional]').forEach((n) => { n.textContent = batch ? '(required)' : '(optional)'; });
+    $('session-date-field').classList.toggle('hidden', batch);
+    $('kg-help').textContent = batch
+      ? 'Every recording is analysed and added to this learner\'s progress report.'
+      : 'Add both IDs to analyse the session and update the learner\'s progress report.';
+    $('btn-submit-label').textContent = batch ? 'Queue all sessions' : 'Start analysis';
+    showFormError('');
+  }
+  tabs.forEach((t, i) => {
+    t.addEventListener('click', () => selectTab(t.dataset.tab));
+    t.addEventListener('keydown', (e) => {
+      if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
+      const next = tabs[(i + (e.key === 'ArrowRight' ? 1 : tabs.length - 1)) % tabs.length];
+      next.focus();
+      selectTab(next.dataset.tab);
     });
   });
 
-  // Sample URL button
-  btnSampleUrl.addEventListener('click', () => {
-    inputUrl.value = SAMPLE_AUDIO_URL;
-  });
+  $('btn-sample-url').addEventListener('click', () => { inputUrl.value = SAMPLE_AUDIO_URL; });
 
-  // ── File Drag and Drop ──────────────────────────────────────────────────
+  // ── File upload ─────────────────────────────────────────────────────────
+  const dropzone = $('dropzone');
+  const fileInput = $('file-input');
   dropzone.addEventListener('click', () => fileInput.click());
-
-  ['dragenter', 'dragover'].forEach(eventName => {
-    dropzone.addEventListener(eventName, (e) => {
-      e.preventDefault();
-      dropzone.classList.add('drag-over');
-    });
+  dropzone.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fileInput.click(); }
   });
+  ['dragenter', 'dragover'].forEach((ev) => dropzone.addEventListener(ev, (e) => {
+    e.preventDefault(); dropzone.classList.add('drag-over');
+  }));
+  ['dragleave', 'drop'].forEach((ev) => dropzone.addEventListener(ev, (e) => {
+    e.preventDefault(); dropzone.classList.remove('drag-over');
+  }));
+  dropzone.addEventListener('drop', (e) => { if (e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]); });
+  fileInput.addEventListener('change', (e) => { if (e.target.files[0]) handleFile(e.target.files[0]); });
+  $('btn-remove-file').addEventListener('click', resetFile);
 
-  ['dragleave', 'drop'].forEach(eventName => {
-    dropzone.addEventListener(eventName, (e) => {
-      e.preventDefault();
-      dropzone.classList.remove('drag-over');
-    });
-  });
-
-  dropzone.addEventListener('drop', (e) => {
-    const files = e.dataTransfer.files;
-    if (files.length > 0) handleFileSelect(files[0]);
-  });
-
-  fileInput.addEventListener('change', (e) => {
-    if (e.target.files.length > 0) handleFileSelect(e.target.files[0]);
-  });
-
-  btnRemoveFile.addEventListener('click', (e) => {
-    e.stopPropagation();
-    resetFileInput();
-  });
-
-  function handleFileSelect(file) {
+  function handleFile(file) {
     if (file.size > 150 * 1024 * 1024) {
-      alert('File size exceeds 150MB limit for browser base64 upload.');
+      showFormError('That file is larger than 150 MB. Upload it somewhere and use its URL instead.');
       return;
     }
-
-    fileName.textContent = file.name;
-    fileSize.textContent = formatBytes(file.size);
-
+    showFormError('');
+    $('file-name').textContent = file.name;
+    $('file-size').textContent = fmt.bytes(file.size);
     const reader = new FileReader();
     reader.onload = (e) => {
-      const dataUrl = e.target.result;
-      audioPlayer.src = dataUrl;
-      // Extract pure base64 (after 'data:*/*;base64,')
-      loadedFileBase64 = dataUrl.split(',')[1];
+      $('audio-player').src = e.target.result;
+      loadedFileBase64 = String(e.target.result).split(',')[1];
       dropzone.classList.add('hidden');
-      filePreview.classList.remove('hidden');
+      $('file-preview').classList.remove('hidden');
     };
     reader.readAsDataURL(file);
   }
 
-  function resetFileInput() {
+  function resetFile() {
     fileInput.value = '';
     loadedFileBase64 = null;
-    audioPlayer.src = '';
-    filePreview.classList.add('hidden');
+    $('audio-player').removeAttribute('src');
+    $('file-preview').classList.add('hidden');
     dropzone.classList.remove('hidden');
   }
 
-  // ── Configuration Options Controls ─────────────────────────────────────
-  autoSpeakersCheck.addEventListener('change', (e) => {
-    numSpeakersInput.disabled = e.target.checked;
-    if (e.target.checked) numSpeakersInput.value = '';
+  // ── Options ─────────────────────────────────────────────────────────────
+  autoSpeakers.addEventListener('change', () => {
+    numSpeakers.disabled = autoSpeakers.checked;
+    if (autoSpeakers.checked) numSpeakers.value = '';
+  });
+  rangePreprocess.addEventListener('input', () => {
+    $('preprocess-val').textContent = PREPROCESS_LABELS[Number(rangePreprocess.value)] || rangePreprocess.value;
   });
 
-  rangePreprocess.addEventListener('input', (e) => {
-    const val = parseInt(e.target.value, 10);
-    preprocessVal.textContent = PREPROCESS_LABELS[val] || `${val}`;
-  });
+  function transcriptionOptions() {
+    return {
+      num_speakers: autoSpeakers.checked ? null : (parseInt(numSpeakers.value, 10) || null),
+      language: $('select-language').value || null,
+      translate: $('check-translate').checked,
+      preprocess: Number(rangePreprocess.value),
+      prompt: $('input-prompt').value.trim() || null,
+    };
+  }
 
-  // ── Form Submission & Job Lifecycle ────────────────────────────────────
-  transcribeForm.addEventListener('submit', async (e) => {
+  // ── Submit ──────────────────────────────────────────────────────────────
+  form.addEventListener('submit', async (e) => {
     e.preventDefault();
+    showFormError('');
+    if (activeTab === 'batch') return submitBatch();
+    return submitSingle();
+  });
 
-    let fileUrl = null;
-    let fileString = null;
+  async function submitSingle() {
+    const learnerId = inputLearner.value.trim();
+    const tutorId = inputTutor.value.trim();
+    const payload = { ...transcriptionOptions(), file_url: null, file_string: null };
 
     if (activeTab === 'url') {
-      fileUrl = inputUrl.value.trim();
-      if (!fileUrl) {
-        alert('Please enter an audio or video URL.');
-        return;
-      }
+      payload.file_url = inputUrl.value.trim();
+      if (!/^https?:\/\//i.test(payload.file_url)) { showFormError('Enter a recording URL starting with http:// or https://.'); inputUrl.focus(); return; }
     } else {
-      if (!loadedFileBase64) {
-        alert('Please select or drop an audio file.');
-        return;
-      }
-      fileString = loadedFileBase64;
+      if (!loadedFileBase64) { showFormError('Choose an audio or video file first.'); return; }
+      payload.file_string = loadedFileBase64;
     }
-
-    // Build payload
-    const payload = {
-      file_url: fileUrl,
-      file_string: fileString,
-      num_speakers: autoSpeakersCheck.checked ? null : parseInt(numSpeakersInput.value, 10) || null,
-      language: selectLanguage.value || null,
-      translate: checkTranslate.checked,
-      preprocess: parseInt(rangePreprocess.value, 10),
-      prompt: inputPrompt.value.trim() || null,
-      learner_id: inputLearnerId.value.trim() || null,
-      tutor_id: inputTutorId.value.trim() || null
-    };
+    if (Boolean(learnerId) !== Boolean(tutorId)) {
+      showFormError('Add both a learner ID and a tutor ID to update a progress report (or leave both empty).');
+      return;
+    }
+    if (learnerId) { payload.learner_id = learnerId; payload.tutor_id = tutorId; }
+    if (inputDate.value) payload.session_date = inputDate.value;
 
     btnSubmit.disabled = true;
-    showState('processing');
-    setProcessingStatus('queued', 'Submitting job request to server...');
-
     try {
-      const response = await fetch('/transcribe', {
+      const job = await api('/transcribe', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+      });
+      saveHistory({ id: job.job_id, status: job.status, learner: learnerId || null, at: Date.now() });
+      startJob(job.job_id, learnerId || null);
+    } catch (err) {
+      showFormError(err.message);
+    } finally {
+      btnSubmit.disabled = false;
+    }
+  }
+
+  function parseBatchLines(text) {
+    const urls = [], dates = [], errors = [];
+    text.split('\n').map((l) => l.trim()).filter(Boolean).forEach((line, i) => {
+      const m = line.match(/^([^\s,]+)\s*(?:,?\s*(\d{4}-\d{2}-\d{2}))?\s*,?\s*$/);
+      if (!m || !/^https?:\/\//i.test(m[1])) { errors.push(`Line ${i + 1} is not a valid URL.`); return; }
+      urls.push(m[1]);
+      dates.push(m[2] || null);
+    });
+    return { urls, dates, errors };
+  }
+
+  async function submitBatch() {
+    const learnerId = inputLearner.value.trim();
+    const tutorId = inputTutor.value.trim();
+    if (!learnerId || !tutorId) { showFormError('Batch analysis needs a learner ID and a tutor ID.'); (learnerId ? inputTutor : inputLearner).focus(); return; }
+    const { urls, dates, errors } = parseBatchLines(batchUrls.value);
+    if (errors.length) { showFormError(errors.slice(0, 3).join(' ')); batchUrls.focus(); return; }
+    if (!urls.length) { showFormError('Add at least one recording URL.'); batchUrls.focus(); return; }
+    if (urls.length > 20) { showFormError('A batch can have at most 20 recordings.'); return; }
+
+    const opts = transcriptionOptions();
+    btnSubmit.disabled = true;
+    try {
+      const batch = await api('/transcribe/batch', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
+        body: JSON.stringify({
+          ...opts,
+          file_urls: urls,
+          session_dates: dates.some(Boolean) ? dates : null,
+          learner_id: learnerId,
+          tutor_id: tutorId,
+        }),
       });
-
-      if (!response.ok) {
-        const errData = await response.json();
-        throw new Error(errData.detail || 'Failed to submit transcription job.');
-      }
-
-      const jobData = await response.json();
-      activeJobIdVal = jobData.job_id;
-
-      // Update UI with Job ID & curl snippet
-      activeJobId.textContent = activeJobIdVal;
-      curlCode.textContent = `curl http://localhost:8000/jobs/${activeJobIdVal}`;
-      
-      saveJobToHistory(activeJobIdVal, 'queued');
-      startPollingJob(activeJobIdVal);
-
+      session.set('ey_active_batch', batch.batch_id);
+      startBatch(batch);
     } catch (err) {
-      showError(err.message || 'Error starting transcription.');
+      showFormError(err.message);
+    } finally {
       btnSubmit.disabled = false;
     }
-  });
+  }
 
-  // Copy buttons
-  btnCopyJobId.addEventListener('click', () => {
-    if (activeJobIdVal) copyToClipboard(activeJobIdVal, 'Job ID copied!');
-  });
-  btnCopyCurl.addEventListener('click', () => {
-    copyToClipboard(curlCode.textContent, 'Curl command copied!');
-  });
+  // ── Single job lifecycle ────────────────────────────────────────────────
+  let jobPoller = null;
+  let timerInterval = null;
 
-  // ── Polling Loop ────────────────────────────────────────────────────────
-  function startPollingJob(jobId) {
-    if (pollInterval) clearInterval(pollInterval);
-    if (timerInterval) clearInterval(timerInterval);
+  function setStep(step, state, msg) {
+    const li = document.querySelector(`#job-steps [data-step="${step}"]`);
+    li.dataset.state = state;
+    if (msg) li.querySelector('[data-step-msg]').textContent = msg;
+  }
 
-    startTime = Date.now();
-    updateTimer();
-    timerInterval = setInterval(updateTimer, 1000);
+  function startTimer() {
+    clearInterval(timerInterval);
+    const start = Date.now();
+    const tick = () => { $('elapsed-timer').textContent = fmt.time((Date.now() - start) / 1000); };
+    tick();
+    timerInterval = setInterval(tick, 1000);
+  }
 
-    pollInterval = setInterval(async () => {
-      try {
-        const res = await fetch(`/jobs/${jobId}`);
-        if (!res.ok) return;
+  function startJob(jobId, learnerId) {
+    if (jobPoller) jobPoller.stop();
+    currentJobId = jobId;
+    currentResult = null;
+    $('active-job-id').textContent = jobId.slice(0, 8);
+    $('processing-title').textContent = 'Working on it';
+    setStep('transcribe', 'pending', 'Waiting for a free worker…');
+    setStep('analyse', learnerId ? 'pending' : 'skipped', learnerId ? 'Starts after transcription' : 'No learner ID — transcript only');
+    showState('state-processing');
+    startTimer();
 
-        const jobStatus = await res.json();
-        updateJobState(jobStatus);
+    let lastKey = '';
+    jobPoller = createPoller(async () => {
+      const job = await api(`/jobs/${jobId}?include_result=false`);
+      const key = `${job.status}|${job.kg_status}`;
+      const changed = key !== lastKey;
+      lastKey = key;
+      saveHistory({ id: jobId, status: job.status, learner: learnerId });
 
-      } catch (e) {
-        console.error('Polling error:', e);
+      if (job.status === 'error') {
+        clearInterval(timerInterval);
+        showError(job.error || 'Transcription failed.');
+        return { stop: true };
       }
-    }, 1500);
-  }
+      if (job.status === 'queued') setStep('transcribe', 'pending', 'Waiting for a free worker…');
+      if (job.status === 'processing') setStep('transcribe', 'active', 'Transcribing speech and separating speakers…');
 
-  function updateJobState(jobStatus) {
-    const status = jobStatus.status;
-    setProcessingStatus(status);
+      if (job.status === 'done' && !currentResult) {
+        const full = await api(`/jobs/${jobId}`);
+        currentResult = full.result;
+        clearInterval(timerInterval);
+        displayResults(full.result);
+      }
+      if (job.status === 'done') renderKgBanner(job, learnerId);
 
-    if (status === 'queued') {
-      processingMsg.textContent = 'Job accepted into queue. Waiting for GPU executor worker...';
-    } else if (status === 'processing') {
-      processingMsg.textContent = 'Transcribing speech & running speaker diarization...';
-    } else if (status === 'done') {
-      stopPolling();
-      saveJobToHistory(jobStatus.job_id, 'done');
-      displayResults(jobStatus.result);
-      btnSubmit.disabled = false;
-    } else if (status === 'error') {
-      stopPolling();
-      saveJobToHistory(jobStatus.job_id, 'error');
-      showError(jobStatus.error || 'Job failed with an error.');
-      btnSubmit.disabled = false;
-    }
-  }
-
-  function stopPolling() {
-    if (pollInterval) clearInterval(pollInterval);
-    if (timerInterval) clearInterval(timerInterval);
-    pollInterval = null;
-    timerInterval = null;
-  }
-
-  function setProcessingStatus(status) {
-    jobStatusBadge.className = `badge status-${status}`;
-    jobStatusBadge.textContent = status.toUpperCase();
-  }
-
-  function updateTimer() {
-    if (!startTime) return;
-    const elapsedSec = Math.floor((Date.now() - startTime) / 1000);
-    const mins = String(Math.floor(elapsedSec / 60)).padStart(2, '0');
-    const secs = String(elapsedSec % 60).padStart(2, '0');
-    elapsedTimer.textContent = `${mins}:${secs}`;
-  }
-
-  // ── Results Rendering ───────────────────────────────────────────────────
-  function displayResults(result) {
-    currentResultData = result;
-    showState('results');
-
-    const segments = result.segments || [];
-    
-    // Metrics
-    let totalDuration = 0;
-    const speakersSet = new Set();
-
-    segments.forEach(seg => {
-      if (seg.end > totalDuration) totalDuration = seg.end;
-      if (seg.speaker) speakersSet.add(seg.speaker);
+      const kgDone = ['not_requested', 'done', 'error', 'skipped'].includes(job.kg_status);
+      return { stop: job.status === 'done' && kgDone, changed };
+    }, {
+      minDelay: 2000,
+      maxDelay: 10000,
+      onFail: (err) => {
+        clearInterval(timerInterval);
+        showError(err.status === 404
+          ? 'This job is no longer on the server (it may have restarted). Please submit the recording again.'
+          : 'Lost contact with the server. Check your connection and try again.');
+      },
     });
-
-    metricDuration.textContent = formatDuration(totalDuration);
-    metricSpeakers.textContent = speakersSet.size || 'Auto';
-    metricSegments.textContent = segments.length;
-    metricLanguage.textContent = (result.language || 'auto').toUpperCase();
-
-    // Render Speaker Chips
-    renderSpeakerChips(Array.from(speakersSet).sort());
-
-    // Render Transcript Thread
-    renderTranscript(segments);
+    jobPoller.start({ immediate: true });
   }
 
-  function renderSpeakerChips(speakers) {
-    speakerChips.innerHTML = `<button class="chip active" data-speaker="ALL">All Speakers (${speakers.length})</button>`;
-    
-    speakers.forEach((spk, idx) => {
-      const btn = document.createElement('button');
-      btn.className = `chip`;
-      btn.setAttribute('data-speaker', spk);
-      btn.textContent = spk.replace('SPEAKER_', 'Spk ');
-      btn.addEventListener('click', () => {
-        document.querySelectorAll('#speaker-chips .chip').forEach(c => c.classList.remove('active'));
-        btn.classList.add('active');
-        activeSpeakerFilter = spk;
-        filterAndRenderTranscript();
-      });
-      speakerChips.appendChild(btn);
-    });
-
-    // All click listener
-    speakerChips.children[0].addEventListener('click', () => {
-      document.querySelectorAll('#speaker-chips .chip').forEach(c => c.classList.remove('active'));
-      speakerChips.children[0].classList.add('active');
-      activeSpeakerFilter = 'ALL';
-      filterAndRenderTranscript();
-    });
-  }
-
-  searchTranscript.addEventListener('input', () => {
-    if (searchTranscript.value) {
-      btnClearSearch.classList.remove('hidden');
+  function renderKgBanner(job, learnerId) {
+    const banner = $('kg-banner');
+    banner.replaceChildren();
+    if (job.kg_status === 'not_requested' || job.kg_status === 'skipped') { banner.className = 'alert hidden'; return; }
+    if (job.kg_status === 'done') {
+      banner.className = 'alert alert-success';
+      banner.append(icon('check-circle'),
+        el('div', {}, el('strong', { text: 'Progress report updated' }),
+          el('p', { text: `This session${job.session_date ? ` (${fmt.date(job.session_date)})` : ''} is now part of ${learnerId}'s report.` })),
+        el('a', { class: 'btn btn-primary btn-sm', href: reportUrl(learnerId) }, 'View report'));
+    } else if (job.kg_status === 'error') {
+      banner.className = 'alert alert-danger';
+      banner.append(icon('alert'),
+        el('div', {}, el('strong', { text: 'Transcript ready, but the progress analysis failed' }),
+          el('p', { text: job.kg_error || 'Unknown error' })));
     } else {
-      btnClearSearch.classList.add('hidden');
+      banner.className = 'alert alert-info';
+      banner.append(el('div', { class: 'spinner', 'aria-hidden': 'true' }),
+        el('div', {}, el('strong', { text: 'Analysing for the progress report…' }),
+          el('p', { text: 'Usually under a minute. The transcript below is ready to use.' })));
     }
-    filterAndRenderTranscript();
-  });
-
-  btnClearSearch.addEventListener('click', () => {
-    searchTranscript.value = '';
-    btnClearSearch.classList.add('hidden');
-    filterAndRenderTranscript();
-  });
-
-  function filterAndRenderTranscript() {
-    if (!currentResultData) return;
-    renderTranscript(currentResultData.segments || []);
-  }
-
-  function renderTranscript(segments) {
-    transcriptContainer.innerHTML = '';
-    const searchQuery = searchTranscript.value.trim().toLowerCase();
-
-    let count = 0;
-
-    segments.forEach(seg => {
-      // Filter by speaker
-      if (activeSpeakerFilter !== 'ALL' && seg.speaker !== activeSpeakerFilter) {
-        return;
-      }
-
-      // Filter by search query
-      if (searchQuery && !seg.text.toLowerCase().includes(searchQuery)) {
-        return;
-      }
-
-      count++;
-
-      const card = document.createElement('div');
-      card.className = 'segment-card';
-
-      // Speaker index for color
-      const spkNum = parseInt((seg.speaker || '0').replace('SPEAKER_', ''), 10) % 6;
-      const spkLabel = seg.speaker ? seg.speaker.replace('SPEAKER_', 'Speaker ') : 'Speaker ?';
-
-      // Format timestamp
-      const timeStr = `${formatTime(seg.start)} → ${formatTime(seg.end)}`;
-
-      // Highlight matching text if searching
-      let formattedText = seg.text;
-      if (searchQuery) {
-        const reg = new RegExp(`(${escapeRegExp(searchQuery)})`, 'gi');
-        formattedText = formattedText.replace(reg, '<span class="highlight-match">$1</span>');
-      }
-
-      card.innerHTML = `
-        <div class="segment-header">
-          <span class="speaker-pill spk-${spkNum}">${spkLabel}</span>
-          <span class="segment-time font-mono">${timeStr}</span>
-        </div>
-        <p class="segment-text">${formattedText}</p>
-      `;
-
-      // Copy individual segment text on click
-      card.addEventListener('click', () => {
-        copyToClipboard(`[${spkLabel} ${timeStr}]: ${seg.text}`, 'Segment copied!');
-      });
-
-      transcriptContainer.appendChild(card);
-    });
-
-    visibleCount.textContent = count;
-  }
-
-  // ── Exports Handling ───────────────────────────────────────────────────
-  btnCopyText.addEventListener('click', () => {
-    if (!currentResultData) return;
-    const fullText = (currentResultData.segments || [])
-      .map(s => `[${s.speaker || 'SPEAKER'} ${formatTime(s.start)}]: ${s.text}`)
-      .join('\n');
-    copyToClipboard(fullText, 'Full transcript copied to clipboard!');
-  });
-
-  btnExportTxt.addEventListener('click', () => {
-    if (!currentResultData) return;
-    const txt = (currentResultData.segments || [])
-      .map(s => `[${s.speaker || 'SPEAKER'} ${formatTime(s.start)} - ${formatTime(s.end)}]\n${s.text}\n`)
-      .join('\n');
-    downloadFile(txt, `transcript_${activeJobIdVal || 'export'}.txt`, 'text/plain');
-  });
-
-  btnExportSrt.addEventListener('click', () => {
-    if (!currentResultData) return;
-    const srt = (currentResultData.segments || []).map((s, idx) => {
-      return `${idx + 1}\n${formatSrtTime(s.start)} --> ${formatSrtTime(s.end)}\n[${s.speaker || 'Speaker'}] ${s.text}\n`;
-    }).join('\n');
-    downloadFile(srt, `transcript_${activeJobIdVal || 'export'}.srt`, 'text/plain');
-  });
-
-  btnExportJson.addEventListener('click', () => {
-    if (!currentResultData) return;
-    const jsonStr = JSON.stringify(currentResultData, null, 2);
-    downloadFile(jsonStr, `result_${activeJobIdVal || 'export'}.json`, 'application/json');
-  });
-
-  // ── UI States Helper ────────────────────────────────────────────────────
-  function showState(state) {
-    stateIdle.classList.add('hidden');
-    stateProcessing.classList.add('hidden');
-    stateError.classList.add('hidden');
-    stateResults.classList.add('hidden');
-
-    if (state === 'idle') stateIdle.classList.remove('hidden');
-    if (state === 'processing') stateProcessing.classList.remove('hidden');
-    if (state === 'error') stateError.classList.remove('hidden');
-    if (state === 'results') stateResults.classList.remove('hidden');
   }
 
   function showError(msg) {
-    showState('error');
-    errorMessageText.textContent = msg;
-    errorTraceback.textContent = msg;
+    $('error-message-text').textContent = msg;
+    showState('state-error');
   }
 
-  btnRetry.addEventListener('click', () => {
-    showState('idle');
+  $('btn-retry').addEventListener('click', () => showState('state-idle'));
+  $('btn-copy-job-id').addEventListener('click', () => { if (currentJobId) copy(currentJobId, 'Job ID copied'); });
+
+  // ── Batch lifecycle ─────────────────────────────────────────────────────
+  let batchPoller = null;
+  const STATUS_LABEL = {
+    queued: ['Queued', ''],
+    processing: ['Transcribing', 'badge-primary'],
+    analysing: ['Analysing', 'badge-primary'],
+    done: ['Done', 'badge-success'],
+    error: ['Failed', 'badge-danger'],
+  };
+
+  function jobDisplayStatus(j) {
+    if (j.status === 'error') return 'error';
+    if (j.status !== 'done') return j.status;
+    if (j.kg_status === 'error') return 'error';
+    if (['done', 'not_requested', 'skipped'].includes(j.kg_status)) return 'done';
+    return 'analysing';
+  }
+
+  function renderBatch(batch) {
+    $('batch-learner').textContent = batch.learner_id;
+    const finished = batch.jobs.filter((j) => ['done', 'error'].includes(jobDisplayStatus(j))).length;
+    const failed = batch.jobs.filter((j) => jobDisplayStatus(j) === 'error').length;
+    const pct = batch.total ? Math.round((finished / batch.total) * 100) : 0;
+    $('batch-summary').textContent = `${finished} of ${batch.total} finished${failed ? ` · ${failed} failed` : ''}`;
+    $('batch-progress-fill').style.width = `${pct}%`;
+    $('batch-progressbar').setAttribute('aria-valuenow', String(pct));
+
+    const badge = $('batch-badge');
+    badge.textContent = batch.complete ? (failed ? 'Finished with errors' : 'Complete') : 'Running';
+    badge.className = `badge ${batch.complete ? (failed ? 'badge-warning' : 'badge-success') : 'badge-primary'}`;
+
+    const list = $('batch-jobs-list');
+    batch.jobs.forEach((j, idx) => {
+      let row = list.querySelector(`[data-job="${CSS.escape(j.job_id)}"]`);
+      if (!row) {
+        row = el('li', { 'data-job': j.job_id },
+          el('span', { class: 'job-index', text: String(idx + 1) }),
+          el('div', { class: 'job-main' },
+            el('span', { class: 'job-url', title: j.file_url || '', text: (j.file_url || '').split('/').pop() || j.job_id }),
+            el('span', { class: 'job-meta', text: j.session_date ? `Session date ${fmt.date(j.session_date)}` : '' }),
+            el('span', { class: 'job-error hidden' })),
+          el('span', { class: 'badge' }));
+        list.append(row);
+      }
+      const st = jobDisplayStatus(j);
+      const [label, cls] = STATUS_LABEL[st] || [st, ''];
+      const b = row.querySelector('.badge');
+      b.textContent = label;
+      b.className = `badge ${cls}`;
+      const errEl = row.querySelector('.job-error');
+      errEl.textContent = st === 'error' ? (j.error || 'Failed') : '';
+      errEl.classList.toggle('hidden', st !== 'error');
+    });
+
+    $('batch-footer').classList.toggle('hidden', !batch.complete);
+    $('batch-report-link').href = reportUrl(batch.learner_id);
+  }
+
+  function startBatch(batch) {
+    if (batchPoller) batchPoller.stop();
+    $('batch-jobs-list').replaceChildren();
+    showState('state-batch');
+    renderBatch(batch);
+
+    let lastKey = '';
+    batchPoller = createPoller(async () => {
+      const b = await api(`/batches/${batch.batch_id}`);
+      renderBatch(b);
+      const key = b.jobs.map((j) => `${j.status}${j.kg_status}`).join();
+      const changed = key !== lastKey;
+      lastKey = key;
+      if (b.complete) {
+        session.remove('ey_active_batch');
+        toast(b.kg_error || b.error ? 'Batch finished with some errors' : 'Batch complete — progress report updated');
+      }
+      return { stop: b.complete, changed };
+    }, {
+      minDelay: 3000,
+      maxDelay: 15000,
+      onFail: (err) => {
+        session.remove('ey_active_batch');
+        $('batch-summary').textContent = err.status === 404
+          ? 'This batch is no longer on the server (it may have restarted).'
+          : 'Lost contact with the server — refresh the page to check again.';
+        $('batch-badge').textContent = 'Unknown';
+        $('batch-badge').className = 'badge badge-warning';
+      },
+    });
+    batchPoller.start();
+  }
+
+  $('btn-batch-dismiss').addEventListener('click', () => {
+    if (batchPoller) batchPoller.stop();
+    session.remove('ey_active_batch');
+    showState('state-idle');
   });
 
-  // ── History LocalStorage Helper ─────────────────────────────────────────
-  function saveJobToHistory(jobId, status) {
-    let history = getHistory();
-    const existingIdx = history.findIndex(h => h.id === jobId);
-    const item = { id: jobId, status: status, date: new Date().toLocaleTimeString() };
-
-    if (existingIdx >= 0) {
-      history[existingIdx] = item;
-    } else {
-      history.unshift(item);
-    }
-    if (history.length > 20) history = history.slice(0, 20);
-    localStorage.setItem('whisper_job_history', JSON.stringify(history));
-    updateHistoryBadge();
-  }
-
-  function getHistory() {
+  // Resume a batch after a page reload
+  (async () => {
+    const id = session.get('ey_active_batch');
+    if (!id) return;
     try {
-      return JSON.parse(localStorage.getItem('whisper_job_history')) || [];
-    } catch (e) {
-      return [];
+      selectTab('batch');
+      startBatch(await api(`/batches/${id}`));
+    } catch (_) {
+      session.remove('ey_active_batch');
+      showState('state-idle');
     }
+  })();
+
+  // ── Results ─────────────────────────────────────────────────────────────
+  function displayResults(result) {
+    showState('state-results');
+    const segments = result.segments || [];
+    const speakers = [...new Set(segments.map((s) => s.speaker).filter(Boolean))].sort();
+    const total = segments.reduce((m, s) => Math.max(m, s.end || 0), 0);
+
+    $('metric-duration').textContent = fmt.duration(total);
+    $('metric-speakers').textContent = String(speakers.length || '–');
+    $('metric-segments').textContent = String(segments.length);
+    $('metric-language').textContent = (result.language || 'auto').toUpperCase();
+
+    speakerFilter = 'ALL';
+    const chips = $('speaker-chips');
+    chips.replaceChildren();
+    const makeChip = (value, label) => el('button', {
+      type: 'button', class: 'chip', 'aria-pressed': String(value === speakerFilter),
+      onclick: (e) => {
+        speakerFilter = value;
+        chips.querySelectorAll('.chip').forEach((c) => c.setAttribute('aria-pressed', String(c === e.currentTarget)));
+        renderTranscript();
+      },
+    }, label);
+    chips.append(makeChip('ALL', `All (${speakers.length})`), ...speakers.map((s) => makeChip(s, fmt.speaker(s))));
+
+    renderTranscript();
   }
 
-  function updateHistoryBadge() {
-    const list = getHistory();
-    historyCount.textContent = list.length;
-  }
-
-  btnHistory.addEventListener('click', () => {
-    renderHistoryModal();
-    historyModal.classList.remove('hidden');
-  });
-  btnCloseHistory.addEventListener('click', () => historyModal.classList.add('hidden'));
-
-  btnClearHistory.addEventListener('click', () => {
-    localStorage.removeItem('whisper_job_history');
-    renderHistoryModal();
-    updateHistoryBadge();
-  });
-
-  function renderHistoryModal() {
-    const list = getHistory();
-    historyList.innerHTML = '';
-
-    if (list.length === 0) {
-      historyList.innerHTML = '<p class="empty-history">No past jobs recorded yet.</p>';
-      return;
+  function highlight(text, query) {
+    if (!query) return [text];
+    const parts = [];
+    const lower = text.toLowerCase();
+    let i = 0;
+    for (;;) {
+      const j = lower.indexOf(query, i);
+      if (j === -1) break;
+      if (j > i) parts.push(text.slice(i, j));
+      parts.push(el('mark', { text: text.slice(j, j + query.length) }));
+      i = j + query.length;
     }
+    parts.push(text.slice(i));
+    return parts;
+  }
 
-    list.forEach(item => {
-      const el = document.createElement('div');
-      el.className = 'history-item';
-      el.innerHTML = `
-        <div class="history-info">
-          <code>${item.id}</code>
-          <span class="history-date">Submitted: ${item.date}</span>
-        </div>
-        <div style="display: flex; gap: 0.5rem; align-items: center;">
-          <span class="badge status-${item.status}">${item.status}</span>
-          <button class="btn btn-xs btn-secondary">Load</button>
-        </div>
-      `;
-
-      el.querySelector('button').addEventListener('click', () => {
-        historyModal.classList.add('hidden');
-        activeJobIdVal = item.id;
-        showState('processing');
-        startPollingJob(item.id);
-      });
-
-      historyList.appendChild(el);
+  function renderTranscript() {
+    if (!currentResult) return;
+    const query = $('search-transcript').value.trim().toLowerCase();
+    const container = $('transcript-container');
+    const frag = document.createDocumentFragment();
+    let count = 0;
+    (currentResult.segments || []).forEach((seg) => {
+      if (speakerFilter !== 'ALL' && seg.speaker !== speakerFilter) return;
+      const text = seg.text || '';
+      if (query && !text.toLowerCase().includes(query)) return;
+      count += 1;
+      const spk = parseInt(String(seg.speaker || '0').replace(/\D/g, ''), 10) % 6 || 0;
+      const time = `${fmt.time(seg.start)} – ${fmt.time(seg.end)}`;
+      frag.append(el('li', {
+        class: 'segment', tabindex: '0', title: 'Click to copy',
+        onclick: () => copy(`[${fmt.speaker(seg.speaker)} ${time}] ${text}`, 'Segment copied'),
+        onkeydown: (e) => { if (e.key === 'Enter') e.currentTarget.click(); },
+      },
+        el('div', { class: 'segment-meta' },
+          el('span', { class: `speaker spk-${spk}`, text: fmt.speaker(seg.speaker) }),
+          el('span', { class: 'segment-time', text: time })),
+        el('p', { class: 'segment-text' }, highlight(text, query))));
     });
+    container.replaceChildren(frag);
+    $('visible-count').textContent = String(count);
   }
 
-  // ── General Utilities ───────────────────────────────────────────────────
-  function copyToClipboard(text, toastMsg = 'Copied!') {
-    navigator.clipboard.writeText(text).then(() => {
-      showToast(toastMsg);
-    });
-  }
+  let searchTimer = null;
+  $('search-transcript').addEventListener('input', () => {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(renderTranscript, 120);
+  });
 
-  function showToast(msg) {
-    const toast = document.createElement('div');
-    toast.className = 'toast-notification';
-    toast.style.cssText = `
-      position: fixed; bottom: 20px; right: 20px;
-      background: #6366f1; color: white; padding: 0.6rem 1.2rem;
-      border-radius: 8px; font-size: 0.85rem; font-weight: 600;
-      box-shadow: 0 4px 12px rgba(0,0,0,0.3); z-index: 1000;
-      animation: fadeIn 0.3s ease;
-    `;
-    toast.textContent = msg;
-    document.body.appendChild(toast);
-    setTimeout(() => toast.remove(), 2500);
-  }
-
-  function downloadFile(content, fileName, mimeType) {
-    const blob = new Blob([content], { type: mimeType });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = fileName;
+  // ── Exports ─────────────────────────────────────────────────────────────
+  function download(content, name, type) {
+    const url = URL.createObjectURL(new Blob([content], { type }));
+    const a = el('a', { href: url, download: name });
+    document.body.append(a);
     a.click();
-    URL.revokeObjectURL(url);
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+  const segs = () => (currentResult && currentResult.segments) || [];
+  const base = () => `transcript_${(currentJobId || 'export').slice(0, 8)}`;
+
+  $('btn-copy-text').addEventListener('click', () => {
+    copy(segs().map((s) => `[${fmt.speaker(s.speaker)} ${fmt.time(s.start)}] ${s.text}`).join('\n'), 'Transcript copied');
+  });
+  $('btn-export-txt').addEventListener('click', () => {
+    download(segs().map((s) => `[${fmt.speaker(s.speaker)} ${fmt.time(s.start)} – ${fmt.time(s.end)}]\n${s.text}\n`).join('\n'), `${base()}.txt`, 'text/plain');
+  });
+  $('btn-export-srt').addEventListener('click', () => {
+    download(segs().map((s, i) => `${i + 1}\n${fmt.srt(s.start)} --> ${fmt.srt(s.end)}\n[${fmt.speaker(s.speaker)}] ${s.text}\n`).join('\n'), `${base()}.srt`, 'text/plain');
+  });
+  $('btn-export-json').addEventListener('click', () => {
+    download(JSON.stringify(currentResult, null, 2), `${base()}.json`, 'application/json');
+  });
+
+  // ── History (local to this browser) ─────────────────────────────────────
+  const HISTORY_KEY = 'whisper_job_history';
+
+  function saveHistory(item) {
+    let list = storage.get(HISTORY_KEY, []);
+    const idx = list.findIndex((h) => h.id === item.id);
+    if (idx >= 0) list[idx] = { ...list[idx], ...item };
+    else list.unshift({ at: Date.now(), ...item });
+    list = list.slice(0, 20);
+    storage.set(HISTORY_KEY, list);
+    $('history-count').textContent = String(list.length);
+  }
+  $('history-count').textContent = String(storage.get(HISTORY_KEY, []).length);
+
+  function renderHistory() {
+    const list = storage.get(HISTORY_KEY, []);
+    const ul = $('history-list');
+    ul.replaceChildren();
+    if (!list.length) { ul.append(el('li', { class: 'history-empty', text: 'No jobs yet.' })); return; }
+    list.forEach((h) => {
+      const [label, cls] = STATUS_LABEL[h.status] || [h.status, ''];
+      ul.append(el('li', {},
+        el('div', { class: 'history-info' },
+          el('code', { text: h.id }),
+          el('span', { class: 'help', text: `${h.learner ? `${h.learner} · ` : ''}${h.at ? new Date(h.at).toLocaleString() : ''}` })),
+        el('span', { class: `badge ${cls}`, text: label }),
+        el('button', {
+          type: 'button', class: 'btn btn-secondary btn-sm',
+          onclick: () => { closeHistory(); startJob(h.id, h.learner || null); },
+        }, 'Open')));
+    });
   }
 
-  function formatTime(seconds) {
-    if (isNaN(seconds)) return '00:00';
-    const mins = Math.floor(seconds / 60);
-    const secs = Math.floor(seconds % 60);
-    return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+  const modal = $('history-modal');
+  let lastFocus = null;
+  function openHistory() {
+    lastFocus = document.activeElement;
+    renderHistory();
+    modal.classList.remove('hidden');
+    $('btn-close-history').focus();
   }
-
-  function formatSrtTime(seconds) {
-    const date = new Date(seconds * 1000);
-    const hh = String(Math.floor(seconds / 3600)).padStart(2, '0');
-    const mm = String(date.getUTCMinutes()).padStart(2, '0');
-    const ss = String(date.getUTCSeconds()).padStart(2, '0');
-    const ms = String(date.getUTCMilliseconds()).padStart(3, '0');
-    return `${hh}:${mm}:${ss},${ms}`;
+  function closeHistory() {
+    modal.classList.add('hidden');
+    if (lastFocus) lastFocus.focus();
   }
-
-  function formatDuration(seconds) {
-    const mins = Math.floor(seconds / 60);
-    const secs = Math.floor(seconds % 60);
-    return `${mins}m ${secs}s`;
-  }
-
-  function formatBytes(bytes) {
-    if (bytes === 0) return '0 Bytes';
-    const k = 1024;
-    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
-  }
-
-  function escapeRegExp(string) {
-    return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  }
-});
+  $('btn-history').addEventListener('click', openHistory);
+  $('btn-close-history').addEventListener('click', closeHistory);
+  modal.addEventListener('click', (e) => { if (e.target === modal) closeHistory(); });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !modal.classList.contains('hidden')) closeHistory(); });
+  $('btn-clear-history').addEventListener('click', () => {
+    storage.remove(HISTORY_KEY);
+    $('history-count').textContent = '0';
+    renderHistory();
+  });
+})();
